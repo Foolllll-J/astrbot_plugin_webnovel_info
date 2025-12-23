@@ -1,0 +1,8 @@
+{
+  "display_mode": {
+    "description": "显示模式",
+    "type": "string",
+    "default": "详细",
+    "options": ["详细", "简洁"]
+  }
+}
