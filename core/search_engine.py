@@ -3,59 +3,108 @@ from astrbot.api import logger
 
 class MultiSearchEngine:
     @staticmethod
-    def get_weight(priority_str: str):
-        """将用户配置的优先级(1, 2)转换为权重系数"""
-        if priority_str == "0": return 0.0
-        if priority_str == "1": return 1.5  # 优先级越高，权重系数越大
-        return 1.0
+    def get_weight(priority_str: str) -> float:
+        """根据优先级配置返回权重值"""
+        priority_map = {"0": 0.0, "1": 1.5, "2": 1.0}
+        return priority_map.get(priority_str, 1.0)
 
     @staticmethod
-    def calculate_score(book, keyword, weight):
-        """智能评分算法"""
+    def calculate_score(book: dict, keyword: str, weight: float) -> float:
+        """基于书名/作者匹配度+平台权重的智能打分"""
         name = book.get('name', '')
         author = book.get('author', '未知')
-        base_score = 0
-
-        # 1. 匹配度打分
+        
+        # 书名匹配得分
         if name == keyword:
-            base_score = 100
+            name_score = 100
         elif name.startswith(keyword):
-            base_score = 85
+            name_score = 85
         elif keyword in name:
-            base_score = 70
+            name_score = 70
         else:
-            # 2. 动态去噪：计算关键词字符包含率
-            match_chars = [c for c in keyword if c in name]
-            if len(match_chars) >= len(keyword) * 0.5:
-                base_score = 20  # 弱关联
-            else:
-                base_score = 0   # 噪音项，直接舍弃
-
-        # 3. 作者匹配补偿
-        if keyword in author:
-            base_score += 15
-
+            match_ratio = len([c for c in keyword if c in name]) / len(keyword) if keyword else 0
+            name_score = 30 if match_ratio >= 0.5 else 0
+        
+        # 作者匹配得分
+        author_score = 90 if author == keyword else (65 if keyword in author else 0)
+        
+        # 基础得分（取最高项，双高额外加分）
+        base_score = max(name_score, author_score)
+        if name_score >= 70 and author_score >= 65:
+            base_score += 20
+        
+        # 最终得分（权重加权）
         final_score = base_score * weight
         
+        # 仅DEBUG级别输出打分日志，降低生产环境日志量
         if final_score > 0:
-            logger.info(f"[搜索评分] {book.get('origin')} | Score: {final_score:.1f} | 《{name}》")
+            logger.debug(f"[打分] {book.get('origin', 'unknown')} | 《{name}》 | 得分: {final_score:.1f}")
         
         return final_score
 
     @classmethod
-    def rank_results(cls, pool, keyword, qd_w, cwm_w):
-        """对全平台池子进行动态竞标排序"""
-        weights = {"qidian": qd_w, "ciweimao": cwm_w}
-        ranked = []
+    def sift_by_average(cls, raw_batch: list, keyword: str, weights_map: dict):
+        """按有效书籍平均分筛选高质量结果"""
+        if not raw_batch:
+            return [], [], 0.0
         
-        for book in pool:
-            w = weights.get(book['origin'], 0)
-            if w <= 0: continue
-            
-            score = cls.calculate_score(book, keyword, w)
-            # 自动过滤：总分低于 40 的视为噪音不予展示
-            if score >= 40:
-                book['final_score'] = score
-                ranked.append(book)
-                
-        return sorted(ranked, key=lambda x: x['final_score'], reverse=True)
+        # 计算所有书籍得分并过滤无效结果
+        valid_books = []
+        total_score = 0.0
+        for book in raw_batch:
+            platform_weight = weights_map.get(book.get('origin'), 1.0)
+            score = cls.calculate_score(book, keyword, platform_weight)
+            book['final_score'] = score
+            if score > 0:
+                valid_books.append(book)
+                total_score += score
+        
+        if not valid_books:
+            return [], [], 0.0
+        
+        # 计算有效书籍平均分
+        avg_score = total_score / len(valid_books)
+        logger.debug(f"[筛选] 有效书籍数: {len(valid_books)} | 平均分: {avg_score:.2f}")
+        
+        # 按平均分筛选结果
+        sifted_books = []
+        remaining_books = []
+        for book in valid_books:
+            if book['final_score'] >= avg_score:
+                sifted_books.append(book)
+            else:
+                remaining_books.append(book)
+        
+        return sifted_books, remaining_books, avg_score
+
+    @classmethod
+    def interleave_results(cls, good_books: list, qd_priority: str, cwm_priority: str):
+        """按平台优先级交叉排列结果（高优先级先出）"""
+        # 按得分降序分组
+        qidian_books = sorted(
+            [b for b in good_books if b.get('origin') == 'qidian'],
+            key=lambda x: x['final_score'],
+            reverse=True
+        )
+        ciweimao_books = sorted(
+            [b for b in good_books if b.get('origin') == 'ciweimao'],
+            key=lambda x: x['final_score'],
+            reverse=True
+        )
+        
+        # 确定优先级顺序
+        high_prio_books = qidian_books if qd_priority <= cwm_priority else ciweimao_books
+        low_prio_books = ciweimao_books if qd_priority <= cwm_priority else qidian_books
+        
+        # 交叉合并结果
+        interleaved = []
+        idx_high, idx_low = 0, 0
+        while idx_high < len(high_prio_books) or idx_low < len(low_prio_books):
+            if idx_high < len(high_prio_books):
+                interleaved.append(high_prio_books[idx_high])
+                idx_high += 1
+            if idx_low < len(low_prio_books):
+                interleaved.append(low_prio_books[idx_low])
+                idx_low += 1
+        
+        return interleaved

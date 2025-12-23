@@ -97,7 +97,6 @@ class CiweimaoSource(BaseSource):
                         "collection": collections.group(1) if collections else "0",
                         "last_update": update_time[0].replace("最后更新：", "").strip() if update_time else None,
                         "url": book_url,
-                        # 刺猬猫 PC 源码不含正文，留空以匹配 main 逻辑
                         "first_chapter_title": None,
                         "first_chapter_content": None
                     }
