@@ -19,9 +19,11 @@ class QidianSource(BaseSource):
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
         }
 
-    async def search_book(self, keyword):
+    async def search_book(self, keyword, page=1, return_metadata=False):
         """解析搜索页 - 获取书籍初步列表"""
-        search_url = f"https://m.qidian.com/search?kw={quote(keyword)}"
+        # 使用移动端搜索API，支持分页
+        # 根据提供的书源配置，使用支持分页的API
+        search_url = f"https://m.qidian.com/so/{quote(keyword)}.html?pageNum={page}"
         logger.info(f"正在搜索: {search_url}")
 
         async with aiohttp.ClientSession(headers=self.headers) as session:
@@ -32,10 +34,15 @@ class QidianSource(BaseSource):
                     script_node = tree.xpath("//script[@id='vite-plugin-ssr_pageContext']/text()")
                     if not script_node:
                         logger.error("搜索页未找到数据脚本标签")
-                        return []
+                        return [] if not return_metadata else {"books": [], "total": 0, "current_page": page, "is_last": True}
 
                     data = json.loads(script_node[0])
-                    records = data.get('pageContext', {}).get('pageProps', {}).get('pageData', {}).get('bookInfo', {}).get('records', [])
+                    page_data = data.get('pageContext', {}).get('pageProps', {}).get('pageData', {})
+                    book_info = page_data.get('bookInfo', {})
+
+                    records = book_info.get('records', [])
+                    total = book_info.get('total', len(records))  # 如果有total字段就使用，否则用记录数
+                    is_last = book_info.get('isLast', len(records) < 20)  # 如果有isLast字段就使用，否则根据记录数判断
 
                     results = []
                     for r in records:
@@ -45,14 +52,23 @@ class QidianSource(BaseSource):
                             "bid": r.get("bid"),
                             "url": f"https://m.qidian.com/book/{r.get('bid')}/"
                         })
+
+                    if return_metadata:
+                        return {
+                            "books": results,
+                            "total": total,
+                            "current_page": page,
+                            "is_last": bool(is_last)
+                        }
+
                     return results
             except Exception as e:
                 logger.error(f"搜索发生异常: {e}")
-                return []
+                return [] if not return_metadata else {"books": [], "total": 0, "current_page": page, "is_last": True}
 
     async def get_book_details(self, book_url):
         """解析详情页数据块 - 提取全量元数据（含封面）"""
-        # 统一使用移动端链接进行解析
+        # 统一使用移动端链接进行解析（for parsing）
         book_url = book_url.replace("www.qidian.com", "m.qidian.com")
         logger.info(f"正在获取详情: {book_url}")
 

@@ -120,21 +120,28 @@ class WebnovelInfoPlugin(Star):
                 logger.error(f"获取书籍详情时出错: {e}", exc_info=True)
                 yield event.plain_result(f"获取书籍详情时发生错误: {e}")
         else:
-            # 搜索书籍
+            # 搜索书籍 - 获取第一页结果及元数据
             yield event.plain_result(f"正在为《{book_name}》搜索起点...")
 
             try:
-                search_results = await source.search_book(book_name)
-                if not search_results:
+                # 获取第一页搜索结果及元数据
+                search_result = await source.search_book(book_name, page=1, return_metadata=True)
+                if not search_result or not search_result.get("books"):
                     yield event.plain_result(f"在起点找不到《{book_name}》这本书。")
                     return
 
-                # 计算分页信息
-                results_per_page = 20
-                total_results = len(search_results)
-                max_pages = (total_results + results_per_page - 1) // results_per_page  # 向上取整
+                search_results = search_result["books"]
+                total_results = search_result["total"]
+                is_last_page = search_result["is_last"]
 
-                # 如果只有一条结果且书名完全匹配，则直接返回详情
+                # 计算总页数 (每页20个结果)
+                results_per_page = 20
+                max_pages = (total_results + results_per_page - 1) // results_per_page  # 向上取整
+                # 如果当前页是最后一页，或者根据记录数判断只有这一页，则设置正确的max_pages
+                if is_last_page or len(search_results) < results_per_page:
+                    max_pages = 1
+
+                # If only one result and it matches exactly, return details directly
                 if len(search_results) == 1:
                     first_result = search_results[0]
                     if first_result.get("name", "").lower() == book_name.lower():
@@ -152,16 +159,14 @@ class WebnovelInfoPlugin(Star):
                             yield event.chain_result(chain)
                             return
 
-                # 否则显示第一页搜索结果
-                start_index = 0
-                end_index = min(results_per_page, total_results)
-                current_page_results = search_results[start_index:end_index]
+                # Show first page of search results
+                current_page_results = search_results
 
-                # 更新用户搜索状态
+                # Update user search state
                 self._update_user_search_state(user_id, book_name, 1, max_pages, "qidian", current_page_results)
 
-                # 显示搜索结果列表
-                message_text = f"以下是【{book_name}】的第 1/{max_pages} 页搜索结果:\n"
+                # Display search results list
+                message_text = f"以下是【{book_name}】的第 1/{max_pages} 页搜索结果 (共{total_results}个结果):\n"
                 for i, book in enumerate(current_page_results):
                     num = i + 1
                     name = book.get("name", "未知书籍")
@@ -233,13 +238,6 @@ class WebnovelInfoPlugin(Star):
             return
 
         current_page = state.get("current_page", 1)
-        max_pages = state.get("max_pages", 1)
-
-        if current_page >= max_pages:
-            yield event.plain_result("➡️ 已经是最后一页了。")
-            return
-
-        next_page = current_page + 1
         keyword = state["keyword"]
 
         source = self.source_manager.get_source("qidian")
@@ -248,29 +246,34 @@ class WebnovelInfoPlugin(Star):
             return
 
         try:
-            search_results = await source.search_book(keyword)
-            if not search_results:
-                yield event.plain_result(f"😢 无法加载第 {next_page} 页。")
+            # Fetch the next page of results with metadata
+            next_page = current_page + 1
+            search_result = await source.search_book(keyword, page=next_page, return_metadata=True)
+
+            if not search_result or not search_result.get("books"):
+                yield event.plain_result("➡️ 已经是最后一页了。")
                 return
 
-            # 计算分页信息
+            search_results = search_result["books"]
+            total_results = search_result["total"]
+            is_last_page = search_result["is_last"]
+
+            # Calculate max_pages based on total results
             results_per_page = 20
-            start_index = (next_page - 1) * results_per_page
-            end_index = min(start_index + results_per_page, len(search_results))
-            current_page_results = search_results[start_index:end_index]
+            max_pages = (total_results + results_per_page - 1) // results_per_page  # 向上取整
 
-            # 更新用户搜索状态
-            self._update_user_search_state(user_id, keyword, next_page, max_pages, "qidian", current_page_results)
+            # Update user search state with the new page
+            self._update_user_search_state(user_id, keyword, next_page, max_pages, "qidian", search_results)
 
-            message_text = f"以下是【{keyword}】的第 {next_page}/{max_pages} 页搜索结果:\n"
-            for i, book in enumerate(current_page_results):
-                num = start_index + i + 1
+            message_text = f"以下是【{keyword}】的第 {next_page}/{max_pages} 页搜索结果 (共{total_results}个结果):\n"
+            for i, book in enumerate(search_results):
+                num = (next_page - 1) * 20 + i + 1  # Calculate global index
                 name = book.get("name", "未知书籍")
                 author = book.get("author", "未知作者")
                 message_text += f"{num}. {name}\n    作者：{author}\n"
 
             message_text += f"\n💡 请使用 `/起点 <序号>` 或 `/qd <序号>` 查看详情"
-            if max_pages > 1:
+            if next_page < max_pages:
                 message_text += f"\n💡 使用 /起点 下一页 或 /qd 下一页 翻页"
 
             yield event.plain_result(message_text)
@@ -295,7 +298,6 @@ class WebnovelInfoPlugin(Star):
 
         prev_page = current_page - 1
         keyword = state["keyword"]
-        max_pages = state.get("max_pages", 1)
 
         source = self.source_manager.get_source("qidian")
         if not source:
@@ -303,30 +305,35 @@ class WebnovelInfoPlugin(Star):
             return
 
         try:
-            search_results = await source.search_book(keyword)
-            if not search_results:
+            # Fetch the previous page of results with metadata
+            search_result = await source.search_book(keyword, page=prev_page, return_metadata=True)
+            if not search_result or not search_result.get("books"):
                 yield event.plain_result(f"😢 无法加载第 {prev_page} 页。")
                 return
 
-            # 计算分页信息
+            search_results = search_result["books"]
+            total_results = search_result["total"]
+            is_last_page = search_result["is_last"]
+
+            # Calculate max_pages based on total results
             results_per_page = 20
-            start_index = (prev_page - 1) * results_per_page
-            end_index = min(start_index + results_per_page, len(search_results))
-            current_page_results = search_results[start_index:end_index]
+            max_pages = (total_results + results_per_page - 1) // results_per_page  # 向上取整
 
-            # 更新用户搜索状态
-            self._update_user_search_state(user_id, keyword, prev_page, max_pages, "qidian", current_page_results)
+            # Update user search state with the previous page
+            self._update_user_search_state(user_id, keyword, prev_page, max_pages, "qidian", search_results)
 
-            message_text = f"以下是【{keyword}】的第 {prev_page}/{max_pages} 页搜索结果:\n"
-            for i, book in enumerate(current_page_results):
-                num = start_index + i + 1
+            message_text = f"以下是【{keyword}】的第 {prev_page}/{max_pages} 页搜索结果 (共{total_results}个结果):\n"
+            for i, book in enumerate(search_results):
+                num = (prev_page - 1) * 20 + i + 1  # Calculate global index
                 name = book.get("name", "未知书籍")
                 author = book.get("author", "未知作者")
                 message_text += f"{num}. {name}\n    作者：{author}\n"
 
             message_text += f"\n💡 请使用 `/起点 <序号>` 或 `/qd <序号>` 查看详情"
-            if max_pages > 1:
-                message_text += f"\n💡 使用 /起点 下一页 或 /qd 下一页 翻页"
+            if prev_page > 1:
+                message_text += f"\n💡 使用 /起点 上一页 翻页"
+            if prev_page < max_pages:
+                message_text += f"\n💡 使用 /qd 下一页 翻页"
 
             yield event.plain_result(message_text)
         except Exception as e:
@@ -438,7 +445,9 @@ class WebnovelInfoPlugin(Star):
                 message_text += f"最新章节: {last_chapter}\n"
 
         if details.get("url"):
-            message_text += f"链接: {details['url']}\n"
+            # 将移动端链接转换为PC端链接 for display
+            display_url = details['url'].replace("m.qidian.com", "www.qidian.com")
+            message_text += f"链接: {display_url}\n"
 
         chain.append(Comp.Plain(message_text))
         return chain
