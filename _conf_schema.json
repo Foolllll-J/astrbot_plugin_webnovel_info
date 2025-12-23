@@ -4,5 +4,11 @@
     "type": "string",
     "default": "详细",
     "options": ["详细", "简洁"]
+  },
+  "enable_trial": {
+    "description": "启用章节试读",
+    "hint": "开启后，支持试读的平台的书籍详情将附上试读内容。",
+    "type": "bool",
+    "default": false
   }
 }
