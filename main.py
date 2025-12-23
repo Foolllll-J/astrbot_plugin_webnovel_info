@@ -35,83 +35,105 @@ class WebnovelInfoPlugin(Star):
 
     @filter.command("起点", alias={'qd'})
     async def qidian_main_handler(self, event: AstrMessageEvent):
+        """起点指令处理"""
+        async for res in self._common_handler(event, "qidian", "qd", "起点"):
+            yield res
+
+    @filter.command("刺猬猫", alias={'cwm'})
+    async def ciweimao_main_handler(self, event: AstrMessageEvent):
+        """刺猬猫指令处理"""
+        async for res in self._common_handler(event, "ciweimao", "cwm", "刺猬猫"):
+            yield res
+
+    async def _common_handler(self, event: AstrMessageEvent, source_name: str, cmd_alias: str, platform_name: str):
+        """通用平台指令处理器"""
         command_parts = event.message_str.strip().split()
         if len(command_parts) < 2:
-            yield event.plain_result("请输入书名。用法: /qd <书名>\n💡 翻页: /qd 下一页\n💡 详情: /qd <序号>")
+            yield event.plain_result(f"请输入书名。用法: /{cmd_alias} <书名>\n💡 翻页: /{cmd_alias} 下/上页\n💡 详情: /{cmd_alias} <序号>")
             return
 
         user_id = event.get_sender_id()
         action = command_parts[1]
-        source = self.source_manager.get_source("qidian")
+        source = self.source_manager.get_source(source_name)
 
-        if action == "下一页":
-            async for res in self.qidian_next_page_common(event): yield res
+        # 1. 处理翻页
+        if action in ["下一页", "上一页"]:
+            state = self._get_user_search_state(user_id)
+            if not state["keyword"]:
+                yield event.plain_result("请先搜索一本书。")
+                return
+
+            if action == "下一页":
+                if state["current_page"] >= state["max_pages"]:
+                    yield event.plain_result("➡️ 没有更多了。")
+                    return
+                next_p = state["current_page"] + 1
+            else:
+                if state["current_page"] <= 1:
+                    yield event.plain_result("⬅️ 已经是第一页。")
+                    return
+                next_p = state["current_page"] - 1
+
+            try:
+                res = await source.search_book(state["keyword"], page=next_p, return_metadata=True)
+                state.update({"current_page": next_p, "results": res["books"]})
+                yield event.plain_result(self._build_search_message(state["keyword"], next_p, state["max_pages"], res["books"], cmd_alias, platform_name))
+            except Exception as e:
+                logger.error(f"{platform_name} Page Error: {e}")
+                yield event.plain_result("翻页失败。")
             return
-        elif action == "上一页":
-            async for res in self.qidian_prev_page_common(event): yield res
-            return
+
+        # 2. 处理详情查看
         elif action.isdigit():
             state = self._get_user_search_state(user_id)
             results = state.get("results", [])
             idx = int(action)
+            # 假设每页 20 条记录进行偏移计算
             offset = (state["current_page"] - 1) * 20
             local_idx = idx - offset
             
             if not results or local_idx < 1 or local_idx > len(results):
-                yield event.plain_result(f"🤔 序号 {idx} 不在当前页面。")
+                yield event.plain_result(f"🤔 序号 {idx} 不在当前页面结果中。")
                 return
             
             selected = results[local_idx - 1]
             details = await source.get_book_details(selected["url"])
             if details:
                 yield event.chain_result(await self._format_book_details(details))
+            else:
+                yield event.plain_result("无法获取该书详情。")
             return
 
+        # 3. 处理新搜索
         book_name = " ".join(command_parts[1:])
-        yield event.plain_result(f"🔍 正在起点搜索《{book_name}》...")
+        yield event.plain_result(f"🔍 正在{platform_name}搜索《{book_name}》...")
         try:
             res = await source.search_book(book_name, page=1, return_metadata=True)
             if not res or not res.get("books"):
-                yield event.plain_result(f"在起点找不到《{book_name}》。")
+                yield event.plain_result(f"在{platform_name}找不到《{book_name}》。")
                 return
-            max_pages = (res["total"] + 19) // 20
-            self.user_search_state[user_id] = {"keyword": book_name, "current_page": 1, "max_pages": max_pages, "results": res["books"]}
-            yield event.plain_result(self._build_search_message(book_name, 1, max_pages, res["books"]))
+            
+            max_pages = (res.get("total", 0) + 19) // 20
+            if max_pages == 0 and res.get("books"): max_pages = 1
+            
+            self.user_search_state[user_id] = {
+                "keyword": book_name, 
+                "current_page": 1, 
+                "max_pages": max_pages, 
+                "results": res["books"]
+            }
+            yield event.plain_result(self._build_search_message(book_name, 1, max_pages, res["books"], cmd_alias, platform_name))
         except Exception as e:
-            logger.error(f"Search Error: {e}")
+            logger.error(f"{platform_name} Search Error: {e}")
             yield event.plain_result("搜索失败。")
 
-    def _build_search_message(self, keyword, current_page, max_pages, results):
-        msg = f"以下是【{keyword}】的第 {current_page}/{max_pages} 页搜索结果:\n"
+    def _build_search_message(self, keyword, current_page, max_pages, results, cmd_alias="qd", platform_name="起点"):
+        msg = f"以下是【{platform_name}】中“{keyword}”的第 {current_page}/{max_pages} 页结果:\n"
         start_num = (current_page - 1) * 20 + 1
         for i, b in enumerate(results):
             msg += f"{start_num + i}. {b['name']}\n    作者：{b['author']}\n"
-        msg += f"\n💡 请使用 `/qd <序号>` 查看详情\n💡 使用 /qd 下一页 翻页"
+        msg += f"\n💡 请使用 `/{cmd_alias} <序号>` 查看详情\n💡 使用 /{cmd_alias} 下一页 翻页"
         return msg
-
-    async def qidian_next_page_common(self, event: AstrMessageEvent):
-        user_id = event.get_sender_id()
-        state = self._get_user_search_state(user_id)
-        if not state["keyword"] or state["current_page"] >= state["max_pages"]:
-            yield event.plain_result("➡️ 没有更多了。")
-            return
-        next_p = state["current_page"] + 1
-        source = self.source_manager.get_source("qidian")
-        res = await source.search_book(state["keyword"], page=next_p, return_metadata=True)
-        state.update({"current_page": next_p, "results": res["books"]})
-        yield event.plain_result(self._build_search_message(state["keyword"], next_p, state["max_pages"], res["books"]))
-
-    async def qidian_prev_page_common(self, event: AstrMessageEvent):
-        user_id = event.get_sender_id()
-        state = self._get_user_search_state(user_id)
-        if state["current_page"] <= 1:
-            yield event.plain_result("⬅️ 已经是第一页。")
-            return
-        prev_p = state["current_page"] - 1
-        source = self.source_manager.get_source("qidian")
-        res = await source.search_book(state["keyword"], page=prev_p, return_metadata=True)
-        state.update({"current_page": prev_p, "results": res["books"]})
-        yield event.plain_result(self._build_search_message(state["keyword"], prev_p, state["max_pages"], res["books"]))
 
     async def _format_book_details(self, details):
         chain = []
@@ -137,10 +159,9 @@ class WebnovelInfoPlugin(Star):
             if details.get('tags'): msg += f"🔖 标签: {' / '.join(details['tags'])}\n"
             
             rating, r_users = str(details.get('rating')), str(details.get('rating_users'))
-            if rating not in ["0", "0.0", "暂无", "None"] and r_users not in ["0", "None"]:
+            if rating not in ["None", "0", "0.0", "暂无"] and r_users not in ["None", "0"]:
                 msg += f"⭐ 评分: {rating} ({r_users}人评价)\n"
             
-            # 排行
             if details.get('rank') and details.get('rank') != "未上榜":
                 msg += f"🏆 排行: 月票榜第 {details['rank']} 名\n"
             
@@ -159,7 +180,11 @@ class WebnovelInfoPlugin(Star):
             if details.get('last_chapter'): msg += f" -> {details['last_chapter']}"
             msg += "\n"
         
-        msg += f"🔗 链接: {details['url'].replace('m.qidian.com', 'www.qidian.com')}\n"
+        # 链接转换逻辑
+        final_url = details['url']
+        if "qidian.com" in final_url:
+            final_url = final_url.replace('m.qidian.com', 'www.qidian.com')
+        msg += f"🔗 链接: {final_url}\n"
 
         if self.enable_trial and details.get('first_chapter_title'):
             msg += f"\n📖 【试读】{details['first_chapter_title']}\n"
