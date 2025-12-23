@@ -36,7 +36,7 @@ class CiweimaoSource(BaseSource):
                             results.append({
                                 "name": name[0].strip(),
                                 "author": author[0].strip() if author else "未知",
-                                "url": url[0] if url[0].startswith("http") else self.base_url + url[0]
+                                "url": url[0] if url[0].startswith("http") else self.base_url + url[0],
                                 "origin": "ciweimao"
                             })
 

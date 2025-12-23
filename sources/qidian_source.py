@@ -44,7 +44,7 @@ class QidianSource(BaseSource):
                             "name": r.get("bName"),
                             "author": r.get("bAuth"),
                             "bid": r.get("bid"),
-                            "url": f"https://m.qidian.com/book/{r.get('bid')}/"
+                            "url": f"https://m.qidian.com/book/{r.get('bid')}/",
                             "origin": "qidian"
                         })
 
