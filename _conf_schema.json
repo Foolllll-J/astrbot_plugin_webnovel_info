@@ -10,5 +10,11 @@
     "hint": "开启后，支持试读的平台的书籍详情将附上试读内容。",
     "type": "bool",
     "default": false
+  },
+  "platform_weights": {
+    "description": "平台搜索优先级",
+    "hint": "用空格分隔。目前顺序：起点 刺猬猫。0表示在该指令中禁用。",
+    "type": "string",
+    "default": "1 2"
   }
 }
