@@ -2,6 +2,7 @@ import asyncio
 import aiohttp
 import base64
 import re
+from cachetools import TTLCache
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
@@ -24,8 +25,11 @@ class WebnovelInfoPlugin(Star):
         self.display_mode = "concise" if self.config.get("display_mode", "详细") == "简洁" else "detailed"
         self.enable_trial = self.config.get("enable_trial", False)  # 是否启用试读功能
         self.priority_cfg = self.config.get("platform_weights", "1 2").split()  # 平台权重配置
-        self.user_search_state = {}  # 用户搜索状态缓存（key:用户ID，value:状态字典）
+        
+        self.user_search_state = TTLCache(maxsize=1000, ttl=3600)
+        
         self.trial_content_limit = 3000  # 试读内容长度限制（字符数）
+        self.page_size = 10  
 
     def _get_user_search_state(self, user_id: str):
         """获取/初始化用户搜索状态
@@ -73,7 +77,7 @@ class WebnovelInfoPlugin(Star):
         # 解析用户ID和操作指令
         user_id, action = event.get_sender_id(), parts[1]
         state = self._get_user_search_state(user_id)
-        page_size, avg_threshold = 10, 60  # 每页条数、结果筛选阈值
+        avg_threshold = 60  # 结果筛选阈值
 
         # 序号查询：查看指定书籍详情
         if action.isdigit():
@@ -112,7 +116,7 @@ class WebnovelInfoPlugin(Star):
                 })
 
         # 计算目标页数需要的结果总数
-        target_count = req_page * page_size
+        target_count = req_page * self.page_size
         qd_prio, cwm_prio = self.priority_cfg[0], self.priority_cfg[1]
         weights_map = {
             "qidian": MultiSearchEngine.get_weight(qd_prio), 
@@ -166,8 +170,8 @@ class WebnovelInfoPlugin(Star):
                 state["raw_pool"] = []
 
         # 计算当前页展示的结果范围
-        start_idx = (req_page - 1) * page_size
-        display_list = state["full_pool"][start_idx: start_idx + page_size]
+        start_idx = (req_page - 1) * self.page_size
+        display_list = state["full_pool"][start_idx: start_idx + self.page_size]
         state["current_page"] = req_page
 
         # 无结果提示
@@ -175,26 +179,47 @@ class WebnovelInfoPlugin(Star):
             yield event.plain_result(f"抱歉，没有找到匹配“{keyword}”的高质量结果。")
             return
 
-        # 构建搜索结果消息（平台标签后置）
-        msg = f"以下是【{keyword}】的第 {req_page} 页综合搜索结果：\n"
+        # 1. 检查是否还能拉取更多数据（起点/刺猬猫未到最后一页）
+        can_load_more = False
+        if not state["qd_last"] or not state["cwm_last"]:
+            can_load_more = True
+        
+        # 2. 计算当前总页数（已加载数据）
+        current_total_pages = (len(state["full_pool"]) + self.page_size - 1) // self.page_size
+        # 3. 判断是否有下一页（已加载够下一页 或 还能加载更多数据）
+        has_next_page = False
+        if req_page < current_total_pages:
+            has_next_page = True
+        elif can_load_more and (req_page + 1) * self.page_size > len(state["full_pool"]):
+            has_next_page = True
+        
+        # 4. 构建消息（显示总页数）
+        can_load_more = not state["qd_last"] or not state["cwm_last"]
+        current_total_pages = (len(state["full_pool"]) + self.page_size - 1) // self.page_size
+        
+        if can_load_more:
+            msg = f"以下是【{keyword}】的第 {req_page} 页综合搜索结果：\n"  # 有更多→只显示当前页
+        else:
+            msg = f"以下是【{keyword}】的第 {req_page}/{current_total_pages} 页综合搜索结果：\n"  # 无更多→显示总页数
         for i, b in enumerate(display_list):
             platform_tag = "[起点]" if b.get('origin') == 'qidian' else "[刺猬猫]"
             msg += f"{start_idx + i + 1}. {b['name']}\n    {platform_tag} 作者：{b['author']}\n"
         
-        # 构建翻页提示
+        # 5. 构建翻页提示
         page_tips = []
         page_tips.append(f"/ss 上一页") if req_page > 1 else None
-        page_tips.append(f"/ss 下一页") if len(state["full_pool"]) >= (req_page + 1)*page_size else None
+        page_tips.append(f"/ss 下一页") if has_next_page else None
         
-        # 补充操作提示
+        logger.info(f"用户 {user_id} 搜索【{keyword}】第 {req_page} 页结果，当前池中共有 {len(state['full_pool'])} 条结果，可加载更多：{can_load_more}。")
+        
+        # 6. 补充操作提示
         msg += f"\n💡 `/ss <序号>` 查看详情\n"
         if page_tips:
             msg += f"💡 使用 {' | '.join(page_tips)} 翻页"
         else:
-            # 无翻页选项时的友好提示
-            if req_page == 1 and len(state["full_pool"]) <= page_size:
+            if req_page == 1 and len(state["full_pool"]) <= self.page_size and not can_load_more:
                 msg += "💡 当前已是全部结果，无更多内容"
-            elif req_page > 1 and len(state["full_pool"]) < (req_page + 1)*page_size:
+            elif req_page > 1 and not has_next_page and not can_load_more:
                 msg += "💡 当前已是最后一页，无更多内容"
         
         yield event.plain_result(msg)
@@ -223,7 +248,6 @@ class WebnovelInfoPlugin(Star):
         Returns:
             list: 该页码的书籍列表
         """
-        page_size = 10
         # 缓存命中：直接返回
         if target_page in state["cached_pages"]:
             return state["cached_pages"][target_page]
@@ -256,7 +280,6 @@ class WebnovelInfoPlugin(Star):
         user_id = event.get_sender_id()
         action = parts[1]
         state = self._get_user_search_state(user_id)
-        page_size = 10 
 
         # 序号查询：查看书籍详情
         if action.isdigit():
@@ -266,8 +289,8 @@ class WebnovelInfoPlugin(Star):
                 return
             
             # 计算目标页码和页内索引
-            target_page = (seq - 1) // page_size + 1
-            page_inner_idx = (seq - 1) % page_size
+            target_page = (seq - 1) // self.page_size + 1
+            page_inner_idx = (seq - 1) % self.page_size
             
             # 校验搜索状态
             if not state["keyword"] or state["source"] != source_name:
@@ -277,8 +300,12 @@ class WebnovelInfoPlugin(Star):
                 yield event.plain_result(f"🤔 序号 {seq} 不在当前结果中。")
                 return
             
-            # 获取目标页数据（优先缓存）
-            page_data = await self._get_page_data(state, source_name, state["keyword"], target_page)
+            # 获取目标页数据
+            if target_page in state["cached_pages"]:
+                page_data = state["cached_pages"][target_page]
+            else:
+                page_data = await self._get_page_data(state, source_name, state["keyword"], target_page)
+            
             if not page_data or page_inner_idx >= len(page_data):
                 yield event.plain_result(f"🤔 序号 {seq} 不在当前结果中。")
                 return
@@ -301,7 +328,7 @@ class WebnovelInfoPlugin(Star):
                 yield event.plain_result("➡️ 已经没有更多了。")
                 return
             
-            # 拉取并缓存下一页数据
+            # 获取翻页数据
             page_data = await self._get_page_data(state, source_name, state["keyword"], next_p)
             state["current_page"] = next_p
             state["results"] = page_data
@@ -309,7 +336,7 @@ class WebnovelInfoPlugin(Star):
             # 发送翻页结果
             yield event.plain_result(self._build_search_message(
                 state["keyword"], next_p, state["max_pages"], 
-                page_data, cmd_alias, page_size, source_name
+                page_data, cmd_alias, self.page_size, source_name
             ))
             return
 
@@ -326,36 +353,41 @@ class WebnovelInfoPlugin(Star):
                 yield event.plain_result(f"在{platform_name}找不到“{book_name}”。")
                 return
             
-            # 初始化缓存（第一页）
+            # 处理起点返回的100条数据
             first_page_data = res.get("books", [])
-            state["cached_pages"] = {1: first_page_data}
-            
-            # 计算总页数（起点最多显示10页）
-            total = res.get("total", len(first_page_data))
-            max_pages = (total + (page_size - 1)) // page_size
-            if source_name == "qidian" and max_pages > 10:
-                max_pages = 10
+            if source_name == "qidian":
+                # 起点一次性返回100条，全部存入single_pool
+                state["single_pool"] = first_page_data
+                # 计算总页数（10条/页）
+                state["max_pages"] = (len(first_page_data) + self.page_size - 1) // self.page_size
+                # 缓存所有分页数据
+                for i in range(state["max_pages"]):
+                    start = i * self.page_size
+                    end = start + self.page_size
+                    state["cached_pages"][i+1] = first_page_data[start:end]
+            else:
+                state["max_pages"] = res.get("max_pages", 1)
+                state["cached_pages"][1] = first_page_data
             
             # 更新用户搜索状态
             state.update({
                 "keyword": book_name, 
                 "current_page": 1, 
-                "max_pages": max_pages, 
-                "results": first_page_data, 
                 "source": source_name,
-                "single_pool": first_page_data
+                "results": first_page_data[:self.page_size]  # 只取前10条展示
             })
             
             # 发送第一页结果
             yield event.plain_result(self._build_search_message(
-                book_name, 1, max_pages, first_page_data, cmd_alias, page_size, source_name
+                book_name, 1, state["max_pages"], 
+                first_page_data[:self.page_size], cmd_alias, self.page_size, source_name
             ))
         except Exception as e:
             logger.error(f"{platform_name} Search Error: {e}")
             yield event.plain_result("⚠️ 搜索失败。")
 
     def _build_search_message(self, keyword, current_page, max_pages, results, cmd_alias, page_size, source_name=None):
-        """构建单平台搜索结果消息（无平台标签）
+        """构建单平台搜索结果消息
         
         Args:
             keyword: 搜索关键词
@@ -364,16 +396,16 @@ class WebnovelInfoPlugin(Star):
             results: 当前页结果列表
             cmd_alias: 指令别名
             page_size: 每页条数
-            source_name: 数据源名称（仅用于标识，无实际展示）
+            source_name: 数据源名称
         
         Returns:
             str: 格式化后的搜索结果消息
         """
-        msg = f"以下是【{keyword}】的第 {current_page}/{max_pages} 页搜索结果：\n"
+        # 计算起始序号
         start_num = (current_page - 1) * page_size + 1
-        display_list = results
-        # 构建结果列表（无平台标签）
-        for i, b in enumerate(display_list):
+        
+        msg = f"以下是【{keyword}】的第 {current_page}/{max_pages} 页搜索结果：\n"
+        for i, b in enumerate(results):
             msg += f"{start_num + i}. {b['name']}\n    作者：{b['author']}\n"
         
         # 补充操作提示
@@ -514,4 +546,6 @@ class WebnovelInfoPlugin(Star):
 
     async def terminate(self):
         """插件卸载回调"""
-        logger.info("网文信息搜索助手插件卸载")
+        # 清理缓存，释放内存
+        self.user_search_state.clear()
+        logger.info("网文信息搜索助手插件卸载，缓存已清理")

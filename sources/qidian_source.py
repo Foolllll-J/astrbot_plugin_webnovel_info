@@ -15,48 +15,67 @@ class QidianSource(BaseSource):
         }
 
     async def search_book(self, keyword, page=1, return_metadata=False):
-        """解析起点搜索页 - 内部处理 100 条结果封顶限制"""
-        search_url = f"https://m.qidian.com/so/{quote(keyword)}.html?pageNum={page}"
-        logger.info(f"正在搜索起点: {search_url}")
-
+        """强制一次性拉取所有100条结果（忽略page参数）"""
+        all_records = []
+        max_api_page = 5  # 最多5页=100条
+        current_api_page = 1
+        
         async with aiohttp.ClientSession(headers=self.headers) as session:
             try:
-                async with session.get(search_url, timeout=10) as resp:
-                    content = await resp.text()
-                    tree = html.fromstring(content)
-                    script_node = tree.xpath("//script[@id='vite-plugin-ssr_pageContext']/text()")
+                while current_api_page <= max_api_page:
+                    search_url = f"https://m.qidian.com/so/{quote(keyword)}.html?pageNum={current_api_page}"
+                    logger.info(f"正在搜索起点第{current_api_page}页: {search_url}")
                     
-                    if not script_node:
-                        return {"books": [], "total": 0, "current_page": page, "is_last": True} if return_metadata else []
+                    async with session.get(search_url, timeout=10) as resp:
+                        content = await resp.text()
+                        tree = html.fromstring(content)
+                        script_node = tree.xpath("//script[@id='vite-plugin-ssr_pageContext']/text()")
+                        
+                        if not script_node:
+                            break
 
-                    data = json.loads(script_node[0])
-                    page_data = data.get('pageContext', {}).get('pageProps', {}).get('pageData', {})
-                    book_info = page_data.get('bookInfo', {})
-                    records = book_info.get('records', [])
-                    
-                    raw_total = book_info.get('total', len(records))
-                    total = min(100, raw_total) 
-                    is_last = page >= 5 or bool(book_info.get('isLast')) or len(records) < 20
-
-                    results = []
-                    for r in records:
-                        results.append({
-                            "name": r.get("bName"),
-                            "author": r.get("bAuth"),
-                            "bid": r.get("bid"),
-                            "url": f"https://m.qidian.com/book/{r.get('bid')}/",
-                            "origin": "qidian"
-                        })
-
-                    if return_metadata:
-                        return {"books": results, "total": total, "current_page": page, "is_last": is_last}
-                    return results
+                        data = json.loads(script_node[0])
+                        page_data = data.get('pageContext', {}).get('pageProps', {}).get('pageData', {})
+                        book_info = page_data.get('bookInfo', {})
+                        records = book_info.get('records', [])
+                        
+                        if not records:  # 没有数据则终止
+                            break
+                            
+                        # 合并数据
+                        for r in records:
+                            all_records.append({
+                                "name": r.get("bName"),
+                                "author": r.get("bAuth"),
+                                "bid": r.get("bid"),
+                                "url": f"https://m.qidian.com/book/{r.get('bid')}/",
+                                "origin": "qidian"
+                            })
+                        
+                        # 检查是否最后一页
+                        if bool(book_info.get('isLast')) or len(records) < 20:
+                            break
+                            
+                        current_api_page += 1
+                
+                # 最多保留100条
+                all_records = all_records[:100]
+                total = len(all_records)
+                
+                if return_metadata:
+                    return {
+                        "books": all_records, 
+                        "total": total, 
+                        "current_page": 1, 
+                        "is_last": True  # 标记为最后一页，因为已拉取全部
+                    }
+                return all_records
+                
             except Exception as e:
                 logger.error(f"起点搜索异常: {e}")
                 return {"books": [], "total": 0, "current_page": page, "is_last": True} if return_metadata else []
 
     async def get_book_details(self, book_url):
-        """解析详情页全量元数据"""
         book_url = book_url.replace("www.qidian.com", "m.qidian.com")
         async with aiohttp.ClientSession(headers=self.headers) as session:
             try:
@@ -74,7 +93,6 @@ class QidianSource(BaseSource):
 
                             tags = [t.get("TagName") for t in book_extra.get("ugcTagInfos", []) if t.get("TagName")]
                             
-                            # 预处理缩进
                             raw_intro = info.get("desc", "").strip()
                             formatted_intro = "　　" + raw_intro if raw_intro else ""
                             
