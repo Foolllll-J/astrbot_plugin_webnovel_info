@@ -12,7 +12,7 @@ import astrbot.api.message_components as Comp
 from .sources import SourceManager
 from .core.search_engine import MultiSearchEngine
 
-@register("astrbot_plugin_webnovel_info", "Foolllll", "网文信息搜索助手", "0.1", "")
+@register("astrbot_plugin_webnovel_info", "Foolllll", "网文信息搜索助手", "0.2", "")
 class WebnovelInfoPlugin(Star):
     """网文搜索插件核心类
     支持多平台书籍搜索、分页、详情查看、试读内容展示
