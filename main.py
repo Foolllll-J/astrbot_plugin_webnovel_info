@@ -26,6 +26,10 @@ class WebnovelInfoPlugin(Star):
         self.enable_trial = self.config.get("enable_trial", False)  # 是否启用试读功能
         self.priority_cfg = self.config.get("platform_weights", "1 2").split()  # 平台权重配置
         
+        # 初始化番茄 API 配置
+        if "tomato" in self.source_manager.sources:
+            self.source_manager.get_source("tomato").api_base = self.config.get("tomato_api_base", "")
+
         self.user_search_state = TTLCache(maxsize=1000, ttl=3600)
         
         self.trial_content_limit = 3000  # 试读内容长度限制（字符数）
@@ -202,7 +206,7 @@ class WebnovelInfoPlugin(Star):
         else:
             msg = f"以下是【{keyword}】的第 {req_page}/{current_total_pages} 页综合搜索结果：\n"  # 无更多→显示总页数
         for i, b in enumerate(display_list):
-            platform_tag = "[起点]" if b.get('origin') == 'qidian' else "[刺猬猫]"
+            platform_tag = "[起点]" if b.get('origin') == 'qidian' else ("[刺猬猫]" if b.get('origin') == 'ciweimao' else "[番茄]")
             msg += f"{start_idx + i + 1}. {b['name']}\n    {platform_tag} 作者：{b['author']}\n"
         
         # 5. 构建翻页提示
@@ -236,12 +240,21 @@ class WebnovelInfoPlugin(Star):
         async for res in self._common_handler(event, "ciweimao", "cwm", "刺猬猫"):
             yield res
 
+    @filter.command("番茄", alias={'fq'})
+    async def tomato_handler(self, event: AstrMessageEvent):
+        """番茄小说专属搜索"""
+        if not self.config.get("tomato_api_base"):
+            yield event.plain_result("❌ 未配置番茄 API 基础地址，请在配置中填写。")
+            return
+        async for res in self._common_handler(event, "tomato", "fq", "番茄"):
+            yield res
+
     async def _get_page_data(self, state, source_name, keyword, target_page):
         """获取指定页码数据（优先读取缓存）
         
         Args:
             state: 用户搜索状态
-            source_name: 数据源名称（qidian/ciweimao）
+            source_name: 数据源名称（qidian/ciweimao/tomato）
             keyword: 搜索关键词
             target_page: 目标页码
         
@@ -264,9 +277,9 @@ class WebnovelInfoPlugin(Star):
         
         Args:
             event: 消息事件对象
-            source_name: 数据源名称（qidian/ciweimao）
-            cmd_alias: 指令别名（qd/cwm）
-            platform_name: 平台显示名称（起点/刺猬猫）
+            source_name: 数据源名称（qidian/ciweimao/tomato）
+            cmd_alias: 指令别名（qd/cwm/fq）
+            platform_name: 平台显示名称（起点/刺猬猫/番茄）
         
         Yields:
             搜索结果/提示信息
@@ -485,8 +498,11 @@ class WebnovelInfoPlugin(Star):
             
             # 评分
             r, u = str(details.get('rating')), str(details.get('rating_users'))
-            if r not in ["None", "0", "0.0", "暂无"] and u not in ["None", "0"]:
-                msg += f"⭐ 评分: {r} ({u}人评价)\n"
+            if r not in ["None", "0", "0.0", "暂无"]:
+                if u not in ["None", "0"]:
+                    msg += f"⭐ 评分: {r} ({u}人评价)\n"
+                else:
+                    msg += f"⭐ 评分: {r}\n"
             
             # 排行
             if details.get('rank') and details['rank'] != "未上榜":
@@ -513,8 +529,11 @@ class WebnovelInfoPlugin(Star):
                 upd += f" -> {details['last_chapter']}"
             msg += upd + "\n"
         
-        # 链接（替换移动端为PC端）
-        msg += f"🔗 链接: {details['url'].replace('m.qidian.com', 'www.qidian.com')}\n"
+        # 链接（仅起点需要替换移动端为PC端）
+        book_url = details['url']
+        if "qidian.com" in book_url:
+            book_url = book_url.replace('m.qidian.com', 'www.qidian.com')
+        msg += f"🔗 链接: {book_url}\n"
         
         # 试读内容
         if self.enable_trial and details.get('first_chapter_title'):

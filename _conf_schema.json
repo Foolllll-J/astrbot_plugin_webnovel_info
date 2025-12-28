@@ -16,5 +16,11 @@
     "hint": "用空格分隔。目前顺序：起点 刺猬猫。0表示在该指令中禁用。",
     "type": "string",
     "default": "1 2"
+  },
+  "tomato_api_base": {
+    "description": "番茄小说 API 基础地址",
+    "hint": "用于番茄小说搜索。不填则不启用番茄搜索功能。",
+    "type": "string",
+    "default": ""
   }
 }
