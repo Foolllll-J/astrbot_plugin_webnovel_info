@@ -99,8 +99,8 @@ class TomatoSource(BaseSource):
                         "category": data.get("category"),
                         "tags": data.get("tags", "").split(",") if data.get("tags") else [],
                         "rating": data.get("score", "暂无"),
-                        "rating_users": None, # 明确排除
-                        "collection": data.get("all_bookshelf_count", 0),
+                        "rating_users": None,
+                        "collection": 0,
                         "all_recommend": data.get("read_count", 0),
                         "last_chapter": data.get("last_chapter_title", "见详情页"), 
                         "last_update": datetime.fromtimestamp(int(data.get("last_publish_time"))).strftime('%Y-%m-%d %H:%M') if data.get("last_publish_time") else "未知",

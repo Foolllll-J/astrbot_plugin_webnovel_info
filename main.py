@@ -2,6 +2,7 @@ import asyncio
 import aiohttp
 import base64
 import re
+from yarl import URL
 from cachetools import TTLCache
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
@@ -466,12 +467,21 @@ class WebnovelInfoPlugin(Star):
         chain = []
         # 处理封面图片（base64编码）
         if details.get("cover") and details["cover"] not in ["无", None]:
+            cover_url = details["cover"]
             try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(details["cover"], timeout=10) as resp:
-                        image_bytes = await resp.read()
-                chain.append(Comp.Image(file=f"base64://{base64.b64encode(image_bytes).decode()}"))
-            except:
+                # 关键：使用 yarl.URL(encoded=True) 防止 aiohttp 自动对已签名的 URL 进行二次编码导致 403
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                }
+                async with aiohttp.ClientSession(headers=headers) as session:
+                    async with session.get(URL(cover_url, encoded=True), timeout=10) as resp:
+                        if resp.status == 200:
+                            image_bytes = await resp.read()
+                            chain.append(Comp.Image(file=f"base64://{base64.b64encode(image_bytes).decode()}"))
+                        else:
+                            logger.warning(f"封面下载失败，状态码: {resp.status}, URL: {cover_url}")
+            except Exception as e:
+                logger.error(f"封面下载异常: {e}")
                 pass
         
         # 构建基础信息
@@ -513,7 +523,8 @@ class WebnovelInfoPlugin(Star):
             if details.get('collection') and str(details.get('collection')) != "0":
                 heat.append(f"收藏 {details['collection']}")
             if details.get('all_recommend') and str(details.get('all_recommend')) != "0":
-                heat.append(f"推荐 {details['all_recommend']}")
+                label = "在读" if "fanqienovel.com" in details.get('url', '') else "推荐"
+                heat.append(f"{label} {details['all_recommend']}")
             heat_str = " | ".join(heat)
             if heat_str:
                 msg += f"🔥 热度: {heat_str}\n"
