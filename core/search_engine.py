@@ -78,33 +78,36 @@ class MultiSearchEngine:
         return sifted_books, remaining_books, avg_score
 
     @classmethod
-    def interleave_results(cls, good_books: list, qd_priority: str, cwm_priority: str):
-        """按平台优先级交叉排列结果（高优先级先出）"""
-        # 按得分降序分组
-        qidian_books = sorted(
-            [b for b in good_books if b.get('origin') == 'qidian'],
-            key=lambda x: x['final_score'],
-            reverse=True
-        )
-        ciweimao_books = sorted(
-            [b for b in good_books if b.get('origin') == 'ciweimao'],
-            key=lambda x: x['final_score'],
-            reverse=True
+    def interleave_results(cls, good_books: list, platforms_prio: list):
+        """按平台优先级交叉排列结果（支持多平台扩展）
+        
+        Args:
+            good_books: 待排列的书籍列表
+            platforms_prio: 平台优先级列表，格式为 [(origin, priority_str), ...]
+        """
+        # 1. 按平台分组并按得分降序排序
+        grouped_books = {}
+        for origin, _ in platforms_prio:
+            grouped_books[origin] = sorted(
+                [b for b in good_books if b.get('origin') == origin],
+                key=lambda x: x['final_score'],
+                reverse=True
+            )
+        
+        # 2. 过滤禁用平台并按优先级数字排序 (1 < 2)
+        sorted_platforms = sorted(
+            [p for p in platforms_prio if p[1] != "0"], 
+            key=lambda x: int(x[1])
         )
         
-        # 确定优先级顺序
-        high_prio_books = qidian_books if qd_priority <= cwm_priority else ciweimao_books
-        low_prio_books = ciweimao_books if qd_priority <= cwm_priority else qidian_books
-        
-        # 交叉合并结果
+        # 3. 交叉合并结果
         interleaved = []
-        idx_high, idx_low = 0, 0
-        while idx_high < len(high_prio_books) or idx_low < len(low_prio_books):
-            if idx_high < len(high_prio_books):
-                interleaved.append(high_prio_books[idx_high])
-                idx_high += 1
-            if idx_low < len(low_prio_books):
-                interleaved.append(low_prio_books[idx_low])
-                idx_low += 1
+        indices = {origin: 0 for origin, _ in sorted_platforms}
         
+        while any(indices[origin] < len(grouped_books[origin]) for origin, _ in sorted_platforms):
+            for origin, _ in sorted_platforms:
+                if indices[origin] < len(grouped_books[origin]):
+                    interleaved.append(grouped_books[origin][indices[origin]])
+                    indices[origin] += 1
+                    
         return interleaved

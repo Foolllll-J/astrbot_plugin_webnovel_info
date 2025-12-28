@@ -25,7 +25,7 @@ class WebnovelInfoPlugin(Star):
         # 显示模式：简洁/详细（默认详细）
         self.display_mode = "concise" if self.config.get("display_mode", "详细") == "简洁" else "detailed"
         self.enable_trial = self.config.get("enable_trial", False)  # 是否启用试读功能
-        self.priority_cfg = self.config.get("platform_weights", "1 2").split()  # 平台权重配置
+        self.priority_cfg = self.config.get("platform_weights", "1 2 2").split()  # 平台权重配置
         
         # 初始化番茄 API 配置
         if "tomato" in self.source_manager.sources:
@@ -53,9 +53,11 @@ class WebnovelInfoPlugin(Star):
                 "raw_pool": [],         # 原始搜索结果池
                 "qd_page": 1,           # 起点搜索页码
                 "cwm_page": 1,          # 刺猬猫搜索页码
+                "tm_page": 1,           # 番茄搜索页码
                 "qd_last": False,       # 起点是否最后一页
                 "cwm_last": False,      # 刺猬猫是否最后一页
-                "source": "",           # 当前搜索源（multi/qidian/ciweimao）
+                "tm_last": False,       # 番茄是否最后一页
+                "source": "",           # 当前搜索源（multi/qidian/ciweimao/tomato）
                 "max_pages": 1,         # 总页数
                 "results": [],          # 当前页结果
                 "single_pool": [],      # 单平台结果池
@@ -115,16 +117,21 @@ class WebnovelInfoPlugin(Star):
                 # 重置搜索状态
                 state.update({
                     "keyword": keyword, "full_pool": [], "raw_pool": [], 
-                    "qd_page": 1, "cwm_page": 1, "qd_last": False, 
-                    "cwm_last": False, "source": "multi",
+                    "qd_page": 1, "cwm_page": 1, "tm_page": 1,
+                    "qd_last": False, "cwm_last": False, "tm_last": False,
+                    "source": "multi",
                     "cached_pages": {}
                 })
 
         # 计算目标页数需要的结果总数
         target_count = req_page * self.page_size
-        qd_prio, cwm_prio = self.priority_cfg[0], self.priority_cfg[1]
+        qd_prio = self.priority_cfg[0] if len(self.priority_cfg) > 0 else "1"
+        tm_prio = self.priority_cfg[1] if len(self.priority_cfg) > 1 else "2"
+        cwm_prio = self.priority_cfg[2] if len(self.priority_cfg) > 2 else "2"
+        
         weights_map = {
             "qidian": MultiSearchEngine.get_weight(qd_prio), 
+            "tomato": MultiSearchEngine.get_weight(tm_prio),
             "ciweimao": MultiSearchEngine.get_weight(cwm_prio)
         }
 
@@ -132,7 +139,7 @@ class WebnovelInfoPlugin(Star):
         while len(state["full_pool"]) < target_count:
             _, _, current_avg = MultiSearchEngine.sift_by_average(state["raw_pool"], keyword, weights_map)
             # 结果不足或质量不达标时，拉取更多数据
-            if not state["raw_pool"] or (current_avg < avg_threshold and not (state["qd_last"] and state["cwm_last"])):
+            if not state["raw_pool"] or (current_avg < avg_threshold and not (state["qd_last"] and state["cwm_last"] and state["tm_last"])):
                 tasks, p_map = [], []
                 # 起点搜索任务
                 if qd_prio != "0" and not state["qd_last"]:
@@ -142,6 +149,11 @@ class WebnovelInfoPlugin(Star):
                 if cwm_prio != "0" and not state["cwm_last"]:
                     tasks.append(self.source_manager.get_source("ciweimao").search_book(keyword, page=state["cwm_page"], return_metadata=True))
                     p_map.append("ciweimao")
+                # 番茄搜索任务
+                if tm_prio != "0" and not state["tm_last"] and self.config.get("tomato_api_base"):
+                    tasks.append(self.source_manager.get_source("tomato").search_book(keyword, page=state["tm_page"], return_metadata=True))
+                    p_map.append("tomato")
+                
                 if not tasks:
                     break
                 # 并发执行搜索任务
@@ -151,24 +163,32 @@ class WebnovelInfoPlugin(Star):
                         continue
                     books = r.get('books', [])
                     # 更新平台页码和是否最后一页状态
-                    if p_map[i] == "qidian":
+                    platform = p_map[i]
+                    if platform == "qidian":
                         state["qd_page"] += 1
                         state["qd_last"] = r.get('is_last', False)
-                    else:
+                    elif platform == "ciweimao":
                         state["cwm_page"] += 1
                         state["cwm_last"] = r.get('is_last', False)
+                    elif platform == "tomato":
+                        state["tm_page"] += 1
+                        state["tm_last"] = r.get('is_last', False)
                     state["raw_pool"].extend(books)
                 continue
 
             # 筛选高质量结果并交叉排序
             good_batch, remains, _ = MultiSearchEngine.sift_by_average(state["raw_pool"], keyword, weights_map)
             if good_batch:
-                interleaved = MultiSearchEngine.interleave_results(good_batch, qd_prio, cwm_prio)
+                interleaved = MultiSearchEngine.interleave_results(good_batch, [
+                    ("qidian", qd_prio), 
+                    ("tomato", tm_prio),
+                    ("ciweimao", cwm_prio)
+                ])
                 state["full_pool"].extend(interleaved)
                 state["raw_pool"] = remains
             else:
                 # 无高质量结果时，补充剩余原始结果
-                if state["qd_last"] and state["cwm_last"]:
+                if state["qd_last"] and state["cwm_last"] and state["tm_last"]:
                     state["full_pool"].extend(state["raw_pool"])
                     state["raw_pool"] = []
                     break
@@ -184,9 +204,9 @@ class WebnovelInfoPlugin(Star):
             yield event.plain_result(f"抱歉，没有找到匹配“{keyword}”的高质量结果。")
             return
 
-        # 1. 检查是否还能拉取更多数据（起点/刺猬猫未到最后一页）
+        # 1. 检查是否还能拉取更多数据（起点/刺猬猫/番茄未到最后一页）
         can_load_more = False
-        if not state["qd_last"] or not state["cwm_last"]:
+        if not state["qd_last"] or not state["cwm_last"] or not state["tm_last"]:
             can_load_more = True
         
         # 2. 计算当前总页数（已加载数据）
@@ -199,7 +219,7 @@ class WebnovelInfoPlugin(Star):
             has_next_page = True
         
         # 4. 构建消息（显示总页数）
-        can_load_more = not state["qd_last"] or not state["cwm_last"]
+        can_load_more = not state["qd_last"] or not state["cwm_last"] or not state["tm_last"]
         current_total_pages = (len(state["full_pool"]) + self.page_size - 1) // self.page_size
         
         if can_load_more:

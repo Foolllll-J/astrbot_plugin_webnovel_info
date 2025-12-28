@@ -12,11 +12,11 @@
     "default": false
   },
   "platform_weights": {
-    "description": "平台搜索优先级",
-    "hint": "用空格分隔。目前顺序：起点 刺猬猫。0表示在该指令中禁用。",
-    "type": "string",
-    "default": "1 2"
-  },
+      "description": "平台搜索优先级",
+      "hint": "用空格分隔。目前顺序：起点 番茄 刺猬猫。数字越小优先级越高（如1比2更优先），0表示在该指令中禁用。",
+      "type": "string",
+      "default": "1 2 3"
+    },
   "tomato_api_base": {
     "description": "番茄小说 API 基础地址",
     "hint": "用于番茄小说搜索。不填则不启用番茄搜索功能。",
