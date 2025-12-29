@@ -35,6 +35,14 @@ class WebnovelInfoPlugin(Star):
         
         self.trial_content_limit = 3000  # 试读内容长度限制（字符数）
         self.page_size = 10  
+        self._session = None # 持久化会话
+
+    async def get_session(self):
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            })
+        return self._session
 
     def _get_user_search_state(self, user_id: str):
         """获取/初始化用户搜索状态
@@ -69,12 +77,6 @@ class WebnovelInfoPlugin(Star):
     async def multi_search_handler(self, event: AstrMessageEvent):
         """多平台综合搜索处理函数
         支持指令：/ss <书名> | /ss <序号> | /ss 上一页/下一页
-        
-        Args:
-            event: 消息事件对象
-        
-        Yields:
-            搜索结果/提示信息
         """
         parts = event.message_str.strip().split()
         if len(parts) < 2:
@@ -85,9 +87,10 @@ class WebnovelInfoPlugin(Star):
         user_id, action = event.get_sender_id(), parts[1]
         state = self._get_user_search_state(user_id)
         avg_threshold = 60  # 结果筛选阈值
+        direct_index = None
 
-        # 序号查询：查看指定书籍详情
-        if action.isdigit():
+        # 1. 序号查询：查看指定书籍详情 (e.g. /ss 1)
+        if action.isdigit() and len(parts) == 2:
             idx = int(action) - 1
             if 0 <= idx < len(state["full_pool"]):
                 target = state["full_pool"][idx]
@@ -98,8 +101,8 @@ class WebnovelInfoPlugin(Star):
             yield event.plain_result(f"🤔 序号 {action} 不在当前结果中。")
             return
 
-        # 翻页操作
-        if action in ["下一页", "下页", "上一页", "上页"]:
+        # 2. 翻页操作 (e.g. /ss 下一页)
+        if action in ["下一页", "下页", "上一页", "上页"] and len(parts) == 2:
             if not state["keyword"]:
                 yield event.plain_result("❌ 请先搜索。")
                 return
@@ -108,9 +111,22 @@ class WebnovelInfoPlugin(Star):
                 yield event.plain_result("⬅️ 已经是第一页。")
                 return
             keyword = state["keyword"]
-        # 新关键词搜索
+        # 3. 新关键词搜索 或 直接查看详情 (e.g. /ss 诡秘之主 或 /ss 诡秘之主 1)
         else:
-            keyword = " ".join(parts[1:])
+            # 解析直接查看详情索引
+            if len(parts) >= 3 and parts[-1].isdigit():
+                try:
+                    direct_index = int(parts[-1])
+                    keyword = " ".join(parts[1:-1])
+                except ValueError:
+                    keyword = " ".join(parts[1:])
+            else:
+                keyword = " ".join(parts[1:])
+            
+            if not keyword:
+                yield event.plain_result("❌ 请输入关键词，例如：`/ss 诡秘之主`")
+                return
+            
             req_page = 1
             if state["keyword"] != keyword:
                 yield event.plain_result(f"🔍 正在多平台搜索“{keyword}”...")
@@ -124,7 +140,10 @@ class WebnovelInfoPlugin(Star):
                 })
 
         # 计算目标页数需要的结果总数
-        target_count = req_page * self.page_size
+        if direct_index:
+            target_count = direct_index
+        else:
+            target_count = req_page * self.page_size
         qd_prio = self.priority_cfg[0] if len(self.priority_cfg) > 0 else "1"
         tm_prio = self.priority_cfg[1] if len(self.priority_cfg) > 1 else "2"
         cwm_prio = self.priority_cfg[2] if len(self.priority_cfg) > 2 else "2"
@@ -136,10 +155,20 @@ class WebnovelInfoPlugin(Star):
         }
 
         # 补充结果池直到满足目标页数需求
-        while len(state["full_pool"]) < target_count:
+        avg_threshold = 60  # 结果筛选阈值
+        max_batches = 5     # 最大拉取批次，防止低质量结果导致无限拉取
+        batch_count = 0
+        
+        while len(state["full_pool"]) < target_count and batch_count < max_batches:
+            batch_count += 1
             _, _, current_avg = MultiSearchEngine.sift_by_average(state["raw_pool"], keyword, weights_map)
+            
             # 结果不足或质量不达标时，拉取更多数据
-            if not state["raw_pool"] or (current_avg < avg_threshold and not (state["qd_last"] and state["cwm_last"] and state["tm_last"])):
+            # 如果所有平台都已拉完，或者当前已经有足够多的原始结果但质量仍不达标，则停止拉取
+            all_exhausted = state["qd_last"] and state["cwm_last"] and state["tm_last"]
+            need_more = not state["raw_pool"] or (current_avg < avg_threshold and not all_exhausted)
+            
+            if need_more:
                 tasks, p_map = [], []
                 # 起点搜索任务
                 if qd_prio != "0" and not state["qd_last"]:
@@ -154,45 +183,59 @@ class WebnovelInfoPlugin(Star):
                     tasks.append(self.source_manager.get_source("tomato").search_book(keyword, page=state["tm_page"], return_metadata=True))
                     p_map.append("tomato")
                 
-                if not tasks:
-                    break
-                # 并发执行搜索任务
-                results = await asyncio.gather(*tasks)
-                for i, r in enumerate(results):
-                    if not r:
+                if tasks:
+                    # 并发执行搜索任务
+                    logger.debug(f"[聚合搜索] 正在执行第 {batch_count} 批次拉取, 关键词: {keyword}")
+                    results = await asyncio.gather(*tasks)
+                    for i, r in enumerate(results):
+                        if not r: continue
+                        books = r.get('books', [])
+                        platform = p_map[i]
+                        if platform == "qidian":
+                            state["qd_page"] += 1
+                            state["qd_last"] = r.get('is_last', False)
+                        elif platform == "ciweimao":
+                            state["cwm_page"] += 1
+                            state["cwm_last"] = r.get('is_last', False)
+                        elif platform == "tomato":
+                            state["tm_page"] += 1
+                            state["tm_last"] = r.get('is_last', False)
+                        state["raw_pool"].extend(books)
+                    
+                    # 拉取后重新计算评分，如果还是没结果且没到限制，继续循环拉取
+                    _, _, current_avg = MultiSearchEngine.sift_by_average(state["raw_pool"], keyword, weights_map)
+                    if not state["raw_pool"] and not all_exhausted:
                         continue
-                    books = r.get('books', [])
-                    # 更新平台页码和是否最后一页状态
-                    platform = p_map[i]
-                    if platform == "qidian":
-                        state["qd_page"] += 1
-                        state["qd_last"] = r.get('is_last', False)
-                    elif platform == "ciweimao":
-                        state["cwm_page"] += 1
-                        state["cwm_last"] = r.get('is_last', False)
-                    elif platform == "tomato":
-                        state["tm_page"] += 1
-                        state["tm_last"] = r.get('is_last', False)
-                    state["raw_pool"].extend(books)
-                continue
-
+            
             # 筛选高质量结果并交叉排序
-            good_batch, remains, _ = MultiSearchEngine.sift_by_average(state["raw_pool"], keyword, weights_map)
-            if good_batch:
-                interleaved = MultiSearchEngine.interleave_results(good_batch, [
-                    ("qidian", qd_prio), 
-                    ("tomato", tm_prio),
-                    ("ciweimao", cwm_prio)
-                ])
-                state["full_pool"].extend(interleaved)
-                state["raw_pool"] = remains
+            # 注意：即使 current_avg < avg_threshold，只要池子里有东西，我们也进行一次筛选
+            # 这样可以保证即使没有完美匹配，也能展示当前最接近的结果
+            if state["raw_pool"]:
+                good_batch, remains, _ = MultiSearchEngine.sift_by_average(state["raw_pool"], keyword, weights_map)
+                if good_batch:
+                    interleaved = MultiSearchEngine.interleave_results(good_batch, qd_prio, tm_prio, cwm_prio)
+                    state["full_pool"].extend(interleaved)
+                    state["raw_pool"] = remains
+                else:
+                    # 如果这一批次没有“高于平均分”的结果（理论上不可能，除非全0分）
+                    # 则把 raw_pool 的内容强行按分数排序放入 full_pool
+                    if all_exhausted or batch_count >= max_batches:
+                        sorted_raw = sorted(state["raw_pool"], key=lambda x: x.get('final_score', 0), reverse=True)
+                        state["full_pool"].extend(sorted_raw)
+                        state["raw_pool"] = []
+            elif all_exhausted:
+                break
+
+        # 如果是直接查看详情模式
+        if direct_index is not None:
+            if 1 <= direct_index <= len(state["full_pool"]):
+                target = state["full_pool"][direct_index - 1]
+                details = await self.source_manager.get_source(target['origin']).get_book_details(target["url"])
+                if details:
+                    yield event.chain_result(await self._format_book_details(details))
+                return
             else:
-                # 无高质量结果时，补充剩余原始结果
-                if state["qd_last"] and state["cwm_last"] and state["tm_last"]:
-                    state["full_pool"].extend(state["raw_pool"])
-                    state["raw_pool"] = []
-                    break
-                state["raw_pool"] = []
+                yield event.plain_result(f"⚠️ 序号 {direct_index} 超出综合搜索结果范围（共 {len(state['full_pool'])} 条），将显示搜索列表。")
 
         # 计算当前页展示的结果范围
         start_idx = (req_page - 1) * self.page_size
@@ -315,8 +358,8 @@ class WebnovelInfoPlugin(Star):
         action = parts[1]
         state = self._get_user_search_state(user_id)
 
-        # 序号查询：查看书籍详情
-        if action.isdigit():
+        # 1. 序号查询：查看当前搜索结果池的书籍详情 (e.g. /qd 1)
+        if action.isdigit() and len(parts) == 2:
             seq = int(action)
             if seq < 1:
                 yield event.plain_result(f"🤔 序号 {seq} 无效。")
@@ -351,8 +394,8 @@ class WebnovelInfoPlugin(Star):
                 yield event.chain_result(await self._format_book_details(details))
             return
 
-        # 翻页操作
-        if action in ["下一页", "上一页"]:
+        # 2. 翻页操作 (e.g. /qd 下一页)
+        if action in ["下一页", "上一页"] and len(parts) == 2:
             if not state["keyword"] or state["source"] != source_name:
                 yield event.plain_result(f"❌ 请先使用 /{cmd_alias} 搜索一本书。")
                 return
@@ -374,8 +417,18 @@ class WebnovelInfoPlugin(Star):
             ))
             return
 
-        # 首次搜索逻辑
-        book_name = " ".join(parts[1:])
+        # 3. 首次搜索逻辑 或 直接查看详情 (e.g. /qd 诡秘之主 或 /qd 诡秘之主 1)
+        # 解析直接查看详情索引
+        direct_index = None
+        if len(parts) >= 3 and parts[-1].isdigit():
+            try:
+                direct_index = int(parts[-1])
+                book_name = " ".join(parts[1:-1])
+            except ValueError:
+                book_name = " ".join(parts[1:])
+        else:
+            book_name = " ".join(parts[1:])
+
         yield event.plain_result(f"🔍 正在{platform_name}搜索“{book_name}”...") 
         try:
             # 拉取第一页数据
@@ -410,6 +463,17 @@ class WebnovelInfoPlugin(Star):
                 "source": source_name,
                 "results": first_page_data[:self.page_size]  # 只取前10条展示
             })
+
+            # 如果是直接查看详情模式
+            if direct_index is not None:
+                if 1 <= direct_index <= len(first_page_data):
+                    target_book = first_page_data[direct_index - 1]
+                    details = await self.source_manager.get_source(source_name).get_book_details(target_book["url"])
+                    if details:
+                        yield event.chain_result(await self._format_book_details(details))
+                    return
+                else:
+                    yield event.plain_result(f"⚠️ 序号 {direct_index} 超出结果范围 (1-{len(first_page_data)})，将显示搜索列表。")
             
             # 发送第一页结果
             yield event.plain_result(self._build_search_message(
@@ -489,20 +553,25 @@ class WebnovelInfoPlugin(Star):
         if details.get("cover") and details["cover"] not in ["无", None]:
             cover_url = details["cover"]
             try:
-                # 关键：使用 yarl.URL(encoded=True) 防止 aiohttp 自动对已签名的 URL 进行二次编码导致 403
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                }
-                async with aiohttp.ClientSession(headers=headers) as session:
-                    async with session.get(URL(cover_url, encoded=True), timeout=10) as resp:
-                        if resp.status == 200:
-                            image_bytes = await resp.read()
-                            chain.append(Comp.Image(file=f"base64://{base64.b64encode(image_bytes).decode()}"))
+                session = await self.get_session()
+                # 针对番茄小说的 URL 使用 encoded=True，防止 aiohttp 对已签名的 URL 进行二次编码
+                # 番茄封面通常包含签名信息，二次编码会导致 403
+                is_tomato = "p3-novel.byteimg.com" in cover_url or "p6-novel.byteimg.com" in cover_url or "p9-novel.byteimg.com" in cover_url
+                
+                request_url = URL(cover_url, encoded=True) if is_tomato else cover_url
+                
+                async with session.get(request_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        image_bytes = await resp.read()
+                        if image_bytes:
+                            base64_str = base64.b64encode(image_bytes).decode()
+                            chain.append(Comp.Image(file=f"base64://{base64_str}"))
                         else:
-                            logger.warning(f"封面下载失败，状态码: {resp.status}, URL: {cover_url}")
+                            logger.warning(f"封面图片数据为空: {cover_url}")
+                    else:
+                        logger.warning(f"封面下载失败，状态码: {resp.status}, URL: {cover_url}")
             except Exception as e:
-                logger.error(f"封面下载异常: {e}")
-                pass
+                logger.error(f"封面下载异常: {type(e).__name__} - {e}, URL: {cover_url}")
         
         # 构建基础信息
         msg = f"---【{details['name']}】---\n✍️ 作者: {details['author']}\n"
@@ -596,6 +665,9 @@ class WebnovelInfoPlugin(Star):
 
     async def terminate(self):
         """插件卸载回调"""
+        # 关闭持久化会话
+        if self._session and not self._session.closed:
+            await self._session.close()
         # 清理缓存，释放内存
         self.user_search_state.clear()
         logger.info("网文信息搜索助手插件卸载，缓存已清理")
