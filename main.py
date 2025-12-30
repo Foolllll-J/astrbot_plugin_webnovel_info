@@ -2,17 +2,19 @@ import asyncio
 import aiohttp
 import base64
 import re
+import os
 from yarl import URL
 from cachetools import TTLCache
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api import logger
 import astrbot.api.message_components as Comp
 
 from .sources import SourceManager
 from .core.search_engine import MultiSearchEngine
+from .core.bookshelf_manager import BookshelfManager
 
-@register("astrbot_plugin_webnovel_info", "Foolllll", "网文信息搜索助手", "0.2", "")
+@register("astrbot_plugin_webnovel_info", "Foolllll", "网文信息搜索助手", "1.0", "")
 class WebnovelInfoPlugin(Star):
     """网文搜索插件核心类
     支持多平台书籍搜索、分页、详情查看、试读内容展示
@@ -20,6 +22,7 @@ class WebnovelInfoPlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
         self.source_manager = SourceManager()  # 数据源管理器
+        self.bookshelf_manager = BookshelfManager(StarTools.get_data_dir("astrbot_plugin_webnovel_info"))
         self.config = config or {}             # 插件配置（默认空字典）
         
         # 显示模式：简洁/详细（默认详细）
@@ -69,7 +72,9 @@ class WebnovelInfoPlugin(Star):
                 "max_pages": 1,         # 总页数
                 "results": [],          # 当前页结果
                 "single_pool": [],      # 单平台结果池
-                "cached_pages": {}      # 页码缓存（key:页码，value:该页数据）
+                "cached_pages": {},     # 页码缓存（key:页码，value:该页数据）
+                "last_viewed": None,    # 最近查看的书籍信息
+                "bookshelf_page": 1     # 书架当前页码
             }
         return self.user_search_state[user_id]
 
@@ -94,6 +99,7 @@ class WebnovelInfoPlugin(Star):
             idx = int(action) - 1
             if 0 <= idx < len(state["full_pool"]):
                 target = state["full_pool"][idx]
+                state["last_viewed"] = target # 记录最近查看
                 details = await self.source_manager.get_source(target['origin']).get_book_details(target["url"])
                 if details:
                     yield event.chain_result(await self._format_book_details(details))
@@ -230,6 +236,7 @@ class WebnovelInfoPlugin(Star):
         if direct_index is not None:
             if 1 <= direct_index <= len(state["full_pool"]):
                 target = state["full_pool"][direct_index - 1]
+                state["last_viewed"] = target # 记录最近查看
                 details = await self.source_manager.get_source(target['origin']).get_book_details(target["url"])
                 if details:
                     yield event.chain_result(await self._format_book_details(details))
@@ -349,6 +356,135 @@ class WebnovelInfoPlugin(Star):
         
         yield event.plain_result(msg.strip())
 
+
+
+    @filter.command("添加书架", alias={'加书架'})
+    async def add_to_bookshelf(self, event: AstrMessageEvent):
+        """添加书籍到书架"""
+        user_id = event.get_sender_id()
+        state = self._get_user_search_state(user_id)
+        parts = event.message_str.strip().split()
+        
+        target_book = None
+        
+        # 如果提供了序号
+        if len(parts) >= 2 and parts[1].isdigit():
+            idx = int(parts[1]) - 1
+            if 0 <= idx < len(state.get("full_pool", [])):
+                target_book = state["full_pool"][idx]
+            elif 0 <= idx < len(state.get("results", [])):
+                target_book = state["results"][idx]
+        # 如果没有参数，使用最近查看的书籍
+        elif len(parts) == 1:
+            target_book = state.get("last_viewed")
+            
+        if not target_book:
+            yield event.plain_result("❌ 请提供有效的书籍序号，或先查看一本书的详情。")
+            return
+            
+        success = self.bookshelf_manager.add_book(user_id, target_book)
+        if success:
+            yield event.plain_result(f"✅ 已将《{target_book['name']}》加入书架。")
+        else:
+            yield event.plain_result(f"🤔 《{target_book['name']}》已经在你的书架里了。")
+
+    @filter.command("移除书架", alias={'删书'})
+    async def remove_from_bookshelf(self, event: AstrMessageEvent):
+        """从书架移除书籍"""
+        user_id = event.get_sender_id()
+        state = self._get_user_search_state(user_id)
+        parts = event.message_str.strip().split()
+        
+        # 如果没有参数，尝试移除最近查看的书籍
+        if len(parts) == 1:
+            last_viewed = state.get("last_viewed")
+            if last_viewed:
+                success = self.bookshelf_manager.remove_book_by_info(user_id, last_viewed['bid'], last_viewed['origin'])
+                if success:
+                    yield event.plain_result(f"✅ 已将《{last_viewed['name']}》从书架移除。")
+                    return
+            yield event.plain_result("❌ 请提供书架中的书籍序号，或先通过书架查看一本书。")
+            return
+
+        # 如果提供了序号
+        if parts[1].isdigit():
+            idx = int(parts[1])
+            removed = self.bookshelf_manager.remove_book(user_id, idx)
+            if removed:
+                yield event.plain_result(f"✅ 已将《{removed['name']}》从书架移除。")
+            else:
+                yield event.plain_result(f"❌ 书架中不存在序号为 {idx} 的书籍。")
+
+    @filter.command("查看书架", alias={'书架','我的书架'})
+    async def view_bookshelf(self, event: AstrMessageEvent):
+        """查看个人书架"""
+        user_id = event.get_sender_id()
+        state = self._get_user_search_state(user_id)
+        parts = event.message_str.strip().split()
+        
+        books = self.bookshelf_manager.get_bookshelf(user_id)
+        if not books:
+            yield event.plain_result("📂 你的书架空空如也，快去搜书添加吧！")
+            return
+
+        page_size = 20
+        total_pages = (len(books) + page_size - 1) // page_size
+        
+        # 处理序号查看详情
+        if len(parts) >= 2 and parts[1].isdigit():
+            idx = int(parts[1])
+            target = self.bookshelf_manager.get_book_by_index(user_id, idx)
+            if target:
+                state["last_viewed"] = target
+                details = await self.source_manager.get_source(target['origin']).get_book_details(target["url"])
+                if details:
+                    yield event.chain_result(await self._format_book_details(details))
+                return
+            else:
+                yield event.plain_result(f"❌ 书架中没有序号为 {idx} 的书籍。")
+                return
+
+        # 处理翻页
+        req_page = state.get("bookshelf_page", 1)
+        if len(parts) >= 2:
+            action = parts[1]
+            if action in ["下一页", "下页"]:
+                if req_page >= total_pages:
+                    yield event.plain_result("🤔 已经到最后一页了。")
+                    return
+                req_page += 1
+            elif action in ["上一页", "上页"]:
+                if req_page <= 1:
+                    yield event.plain_result("🤔 已经是第一页了。")
+                    return
+                req_page -= 1
+        
+        state["bookshelf_page"] = req_page
+        
+        start_idx = (req_page - 1) * page_size
+        display_list = books[start_idx : start_idx + page_size]
+        
+        msg = f"📚 我的书架 (共 {len(books)} 本)\n\n"
+        for i, b in enumerate(display_list):
+            platform_tag = "[起点]" if b.get('origin') == 'qidian' else ("[刺猬猫]" if b.get('origin') == 'ciweimao' else "[番茄]")
+            msg += f"{start_idx + i + 1}. {b['name']}\n    {platform_tag} 作者：{b['author']}\n"
+        
+        msg += f"\n💡 `/书架 <序号>` 查看详情\n"
+        
+        # 动态构建翻页提示
+        page_tips = []
+        if req_page > 1:
+            page_tips.append("上一页")
+        if req_page < total_pages:
+            page_tips.append("下一页")
+            
+        if page_tips:
+            msg += f"💡 `/书架 {'/'.join(page_tips)}` 翻页\n"
+            
+        msg += f"💡 `/删书 <序号>` 删除书籍"
+        
+        yield event.plain_result(msg.strip())
+
     async def _get_page_data(self, state, source_name, keyword, target_page):
         """获取指定页码数据（优先读取缓存）
         
@@ -425,6 +561,7 @@ class WebnovelInfoPlugin(Star):
             
             # 查询并返回书籍详情
             target_book = page_data[page_inner_idx]
+            state["last_viewed"] = target_book # 记录最近查看
             details = await self.source_manager.get_source(source_name).get_book_details(target_book["url"])
             if details:
                 yield event.chain_result(await self._format_book_details(details))
