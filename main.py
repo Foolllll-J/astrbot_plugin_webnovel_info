@@ -313,6 +313,42 @@ class WebnovelInfoPlugin(Star):
         async for res in self._common_handler(event, "tomato", "fq", "番茄"):
             yield res
 
+    @filter.command("三江", alias={'sj'})
+    async def sanjiang_handler(self, event: AstrMessageEvent):
+        """获取起点三江频道推荐书籍"""
+        qidian = self.source_manager.get_source("qidian")
+        books = await qidian.get_sanjiang_books()
+        
+        if not books:
+            yield event.plain_result("❌ 暂时没有获取到三江推荐书籍，请稍后再试。")
+            return
+            
+        # 记录到搜索状态，方便用户直接通过序号看详情
+        user_id = event.get_sender_id()
+        state = self._get_user_search_state(user_id)
+        state.update({
+            "keyword": "三江推荐",
+            "source": "qidian",
+            "full_pool": books, # 三江不需要翻页，直接放入全量池
+            "results": books,
+            "cached_pages": {1: books},
+            "current_page": 1,
+            "max_pages": 1
+        })
+        
+        msg = "📖 【起点·三江推荐】\n\n"
+        for i, b in enumerate(books): # 一次性展示全部结果
+            msg += f"{i+1}. {b['name']} | {b['author']}\n"
+            msg += f"   分类：{b['cat']} | 状态：{b['state']} | {b['cnt']}\n"
+            if b.get('rec'):
+                msg += f"   评语：{b['rec']}\n"
+            desc = b['desc'].replace('\r', '').replace('\n', '').strip()
+            msg += f"   简介：{desc[:60]}...\n\n"
+            
+        msg += f"💡 共 {len(books)} 本。使用 `/qd <序号>` 查看详情。"
+        
+        yield event.plain_result(msg.strip())
+
     async def _get_page_data(self, state, source_name, keyword, target_page):
         """获取指定页码数据（优先读取缓存）
         

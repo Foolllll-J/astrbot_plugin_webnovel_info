@@ -126,3 +126,40 @@ class QidianSource(BaseSource):
             except Exception as e:
                 logger.error(f"起点详情获取异常: {e}")
                 return None
+
+    async def get_sanjiang_books(self):
+        """获取三江频道书籍"""
+        url = "https://m.qidian.com/sanjiang"
+        async with aiohttp.ClientSession(headers=self.headers) as session:
+            try:
+                async with session.get(url, timeout=10) as resp:
+                    content = await resp.text()
+                    tree = html.fromstring(content)
+                    script_node = tree.xpath("//script[@id='vite-plugin-ssr_pageContext']/text()")
+                    if not script_node:
+                        return []
+                    
+                    data = json.loads(script_node[0])
+                    # 三江的数据通常在 pageContext.pageProps.pageData.records 中
+                    page_data = data.get('pageContext', {}).get('pageProps', {}).get('pageData', {})
+                    records = page_data.get('records', [])
+                    
+                    all_books = []
+                    for r in records:
+                        all_books.append({
+                            "rec": r.get("rec"),
+                            "name": r.get("bName"),
+                            "cat": r.get("cat"),
+                            "cnt": r.get("cnt"),
+                            "state": r.get("state"),
+                            "bid": r.get("bid"),
+                            "author": r.get("bAuth"),
+                            "desc": r.get("desc"),
+                            "url": f"https://m.qidian.com/book/{r.get('bid')}/",
+                            "origin": "qidian"
+                        })
+                            
+                    return all_books
+            except Exception as e:
+                logger.error(f"获取三江数据异常: {e}")
+                return []
