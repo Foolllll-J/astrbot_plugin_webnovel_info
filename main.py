@@ -641,6 +641,7 @@ class WebnovelInfoPlugin(Star):
             if direct_index is not None:
                 if 1 <= direct_index <= len(first_page_data):
                     target_book = first_page_data[direct_index - 1]
+                    state["last_viewed"] = target_book
                     details = await self.source_manager.get_source(source_name).get_book_details(target_book["url"])
                     if details:
                         yield event.chain_result(await self._format_book_details(details))
