@@ -14,7 +14,7 @@ from .sources import SourceManager
 from .core.search_engine import MultiSearchEngine
 from .core.bookshelf_manager import BookshelfManager
 
-@register("astrbot_plugin_webnovel_info", "Foolllll", "网文信息搜索助手", "1.0", "")
+@register("astrbot_plugin_webnovel_info", "Foolllll", "网文搜索助手", "1.0", "")
 class WebnovelInfoPlugin(Star):
     """网文搜索插件核心类
     支持多平台书籍搜索、分页、详情查看、试读内容展示
