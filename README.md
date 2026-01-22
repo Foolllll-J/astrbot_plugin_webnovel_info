@@ -91,8 +91,8 @@
 <summary>点击展开查看更新日志</summary>
 
 * **v1.0**
-  - 新增书架模块。
-  - 新增 `/三江` 指令。
+  * 新增书架模块。
+  * 新增 `/三江` 指令。
 * **v0.2**
   * 新增支持番茄小说平台。
 * **v0.1**
@@ -107,6 +107,10 @@
 
 * [AstrBot 帮助文档](https://astrbot.app)
 * 如果您在使用中遇到错误或有改进建议，欢迎提交 [Issue](https://github.com/Foolllll-J/astrbot_plugin_webnovel_info/issues)。
+
+## 💬 交流
+
+欢迎加入网文交流群 [**1062663795**](https://qm.qq.com/cgi-bin/qm/qr?k=zU2UPWyrflqs1sCHufgVRvsejdLSglyP&jump_from=webapi&authKey=Z2Zg79IhS9KXEotmtRbtbabeuZZ0LpztVM+p+V1HyWn9K1JpuaFQr9acnmKK8G5K)，一起推书、吹水~
 
 ---
 

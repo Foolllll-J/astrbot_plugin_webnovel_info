@@ -20,7 +20,7 @@
   "tomato_api_base": {
     "description": "番茄小说 API 基础地址",
     "hint": "用于番茄小说搜索。不填则不启用番茄搜索功能。",
-    "type": "string",
-    "default": ""
+    "type": "list",
+    "default": []
   }
 }

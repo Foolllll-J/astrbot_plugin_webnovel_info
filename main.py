@@ -14,7 +14,7 @@ from .sources import SourceManager
 from .core.search_engine import MultiSearchEngine
 from .core.bookshelf_manager import BookshelfManager
 
-@register("astrbot_plugin_webnovel_info", "Foolllll", "网文搜索助手", "1.0", "")
+@register("astrbot_plugin_webnovel_info", "Foolllll", "网文搜索助手", "1.0.1", "")
 class WebnovelInfoPlugin(Star):
     """网文搜索插件核心类
     支持多平台书籍搜索、分页、详情查看、试读内容展示
@@ -32,7 +32,7 @@ class WebnovelInfoPlugin(Star):
         
         # 初始化番茄 API 配置
         if "tomato" in self.source_manager.sources:
-            self.source_manager.get_source("tomato").api_base = self.config.get("tomato_api_base", "")
+            self.source_manager.get_source("tomato").api_base = self.config.get("tomato_api_base", [])
 
         self.user_search_state = TTLCache(maxsize=1000, ttl=3600)
         
