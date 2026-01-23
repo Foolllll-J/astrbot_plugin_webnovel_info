@@ -1,6 +1,6 @@
 name: astrbot_plugin_webnovel_info
 display_name: 网文搜索助手
-desc: "提供网文搜索、分页浏览、详细信息查询和管理书架功能，支持多平台小说，详情支持简洁/详细两种显示模式"
-version: v1.0.1
+desc: "提供网文搜索、分页浏览、详细信息查询和管理书架功能，支持起点、番茄、刺猬猫、七猫、飞卢、菠萝包等平台。"
+version: v1.1.0
 author: Foolllll
 repo: https://github.com/Foolllll-J/astrbot_plugin_webnovel_info

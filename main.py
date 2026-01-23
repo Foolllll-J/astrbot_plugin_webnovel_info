@@ -14,7 +14,7 @@ from .sources import SourceManager
 from .core.search_engine import MultiSearchEngine
 from .core.bookshelf_manager import BookshelfManager
 
-@register("astrbot_plugin_webnovel_info", "Foolllll", "网文搜索助手", "1.0.1", "")
+@register("astrbot_plugin_webnovel_info", "Foolllll", "网文搜索助手", "1.1.0", "")
 class WebnovelInfoPlugin(Star):
     """网文搜索插件核心类
     支持多平台书籍搜索、分页、详情查看、试读内容展示
@@ -80,9 +80,7 @@ class WebnovelInfoPlugin(Star):
 
     @filter.command("搜书", alias={'ss'})
     async def multi_search_handler(self, event: AstrMessageEvent):
-        """多平台综合搜索处理函数
-        支持指令：/ss <书名> | /ss <序号> | /ss 上一页/下一页
-        """
+        """多平台聚合搜索"""
         parts = event.message_str.strip().split()
         if len(parts) < 2:
             yield event.plain_result("用法: /ss <书名> 或 /ss <序号> 或 /ss 下一页")
@@ -277,7 +275,19 @@ class WebnovelInfoPlugin(Star):
         else:
             msg = f"以下是【{keyword}】的第 {req_page}/{current_total_pages} 页综合搜索结果：\n"  # 无更多→显示总页数
         for i, b in enumerate(display_list):
-            platform_tag = "[起点]" if b.get('origin') == 'qidian' else ("[刺猬猫]" if b.get('origin') == 'ciweimao' else "[番茄]")
+            origin = b.get('origin')
+            if origin == 'qidian':
+                platform_tag = "[起点]"
+            elif origin == 'ciweimao':
+                platform_tag = "[刺猬猫]"
+            elif origin == 'sfacg':
+                platform_tag = "[菠萝包]"
+            elif origin == 'tomato':
+                platform_tag = "[番茄]"
+            elif origin == 'faloo':
+                platform_tag = "[飞卢]"
+            else:
+                platform_tag = "[未知]"
             msg += f"{start_idx + i + 1}. {b['name']}\n    {platform_tag} 作者：{b['author']}\n"
         
         # 5. 构建翻页提示
@@ -318,6 +328,24 @@ class WebnovelInfoPlugin(Star):
             yield event.plain_result("❌ 未配置番茄 API 基础地址，请在配置中填写。")
             return
         async for res in self._common_handler(event, "tomato", "fq", "番茄"):
+            yield res
+
+    @filter.command("菠萝包", alias={'blb'})
+    async def sfacg_handler(self, event: AstrMessageEvent):
+        """菠萝包(SFACG)专属搜索"""
+        async for res in self._common_handler(event, "sfacg", "blb", "菠萝包"):
+            yield res
+
+    @filter.command("飞卢", alias={'fl'})
+    async def faloo_handler(self, event: AstrMessageEvent):
+        """飞卢专属搜索"""
+        async for res in self._common_handler(event, "faloo", "fl", "飞卢"):
+            yield res
+
+    @filter.command("七猫", alias={'qm', '纵横'})
+    async def qimao_handler(self, event: AstrMessageEvent):
+        """七猫专属搜索"""
+        async for res in self._common_handler(event, "qimao", "qm", "七猫"):
             yield res
 
     @filter.command("三江", alias={'sj'})
@@ -466,7 +494,21 @@ class WebnovelInfoPlugin(Star):
         
         msg = f"📚 我的书架 (共 {len(books)} 本)\n\n"
         for i, b in enumerate(display_list):
-            platform_tag = "[起点]" if b.get('origin') == 'qidian' else ("[刺猬猫]" if b.get('origin') == 'ciweimao' else "[番茄]")
+            origin = b.get('origin')
+            if origin == 'qidian':
+                platform_tag = "[起点]"
+            elif origin == 'ciweimao':
+                platform_tag = "[刺猬猫]"
+            elif origin == 'sfacg':
+                platform_tag = "[菠萝包]"
+            elif origin == 'tomato':
+                platform_tag = "[番茄]"
+            elif origin == 'faloo':
+                platform_tag = "[飞卢]"
+            elif origin == 'qimao':
+                platform_tag = "[七猫]"
+            else:
+                platform_tag = "[未知]"
             msg += f"{start_idx + i + 1}. {b['name']}\n    {platform_tag} 作者：{b['author']}\n"
         
         msg += f"\n💡 `/书架 <序号>` 查看详情\n"
@@ -615,6 +657,10 @@ class WebnovelInfoPlugin(Star):
             
             # 处理起点返回的100条数据
             first_page_data = res.get("books", [])
+            
+            # 清空旧的缓存页面，防止跨搜索/跨平台数据污染
+            state["cached_pages"].clear()
+            
             if source_name == "qidian":
                 # 起点一次性返回100条，全部存入single_pool
                 state["single_pool"] = first_page_data
@@ -676,7 +722,11 @@ class WebnovelInfoPlugin(Star):
         # 计算起始序号
         start_num = (current_page - 1) * page_size + 1
         
-        msg = f"以下是【{keyword}】的第 {current_page}/{max_pages} 页搜索结果：\n"
+        if source_name == 'faloo':
+            msg = f"以下是【{keyword}】的第 {current_page} 页搜索结果：\n"
+        else:
+            msg = f"以下是【{keyword}】的第 {current_page}/{max_pages} 页搜索结果：\n"
+        
         for i, b in enumerate(results):
             msg += f"{start_num + i}. {b['name']}\n    作者：{b['author']}\n"
         
@@ -781,13 +831,25 @@ class WebnovelInfoPlugin(Star):
             if details.get('rank') and details['rank'] != "未上榜":
                 msg += f"🏆 排行: 月票榜第 {details['rank']} 名\n"
             
-            # 热度（收藏/推荐）
+            # 热度（收藏/推荐/点击/飞卢数据）
             heat = []
             if details.get('collection') and str(details.get('collection')) != "0":
                 heat.append(f"收藏 {details['collection']}")
             if details.get('all_recommend') and str(details.get('all_recommend')) != "0":
                 label = "在读" if "fanqienovel.com" in details.get('url', '') else "推荐"
                 heat.append(f"{label} {details['all_recommend']}")
+            if details.get('total_click') and str(details.get('total_click')) != "0":
+                heat.append(f"点击 {details['total_click']}")
+            
+            # 飞卢专属热度数据
+            if details.get('origin') == 'faloo':
+                for key, icon in [('reward_coin', '💰'), ('reward_flower', '🌹'), 
+                                ('reward_ticket', '🎟️'), ('reward_review', '✍️')]:
+                    val = details.get(key)
+                    # 过滤 0, 0票, 0点 等零值，保留 0.5万 等非零值
+                    if val and not re.match(r'^0[^\d\.]*$', str(val)):
+                        heat.append(f"{icon} {val}")
+
             heat_str = " | ".join(heat)
             if heat_str:
                 msg += f"🔥 热度: {heat_str}\n"
@@ -844,4 +906,4 @@ class WebnovelInfoPlugin(Star):
             await self._session.close()
         # 清理缓存，释放内存
         self.user_search_state.clear()
-        logger.info("网文信息搜索助手插件卸载，缓存已清理")
+        logger.info("网文搜索助手插件卸载，缓存已清理")
