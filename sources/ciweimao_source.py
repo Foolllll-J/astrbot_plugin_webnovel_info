@@ -80,6 +80,15 @@ class CiweimaoSource(BaseSource):
                     word_count = re.search(r'总字数：(\d+)', grade_text)
                     collections = re.search(r'总收藏：(\d+)', grade_text)
                     
+                    # 提取状态
+                    status_text = "".join(tree.xpath("//p[@class='update-state']//text()"))
+                    if "连载" in status_text:
+                        status = "连载"
+                    elif "完结" in status_text:
+                        status = "完结"
+                    else:
+                        status = "未知"
+
                     # 简介与更新信息
                     intro_nodes = tree.xpath("//div[contains(@class, 'book-desc')]//text()")
                     update_time = tree.xpath("//p[@class='update-time']/text()")
@@ -90,7 +99,7 @@ class CiweimaoSource(BaseSource):
                         "author": author[0].strip() if author else "未知",
                         "intro": "".join([line.strip() for line in intro_nodes if line.strip()]),
                         "cover": cover[0] if cover else None,
-                        "status": "连载/完结",
+                        "status": status,
                         "word_count": f"{word_count.group(1)} 字" if word_count else "未知",
                         "category": category[0].strip() if category else "刺猬猫小说",
                         "tags": [t.strip() for t in tags if t.strip()],
