@@ -14,7 +14,7 @@ from .sources import SourceManager
 from .core.search_engine import MultiSearchEngine
 from .core.bookshelf_manager import BookshelfManager
 
-@register("astrbot_plugin_webnovel_info", "Foolllll", "网文搜索助手", "1.1.0", "")
+@register("astrbot_plugin_webnovel_info", "Foolllll", "网文搜索助手", "1.1.1", "")
 class WebnovelInfoPlugin(Star):
     """网文搜索插件核心类
     支持多平台书籍搜索、分页、详情查看、试读内容展示
@@ -140,7 +140,8 @@ class WebnovelInfoPlugin(Star):
                     "qd_page": 1, "cwm_page": 1, "tm_page": 1,
                     "qd_last": False, "cwm_last": False, "tm_last": False,
                     "source": "multi",
-                    "cached_pages": {}
+                    "cached_pages": {},
+                    "last_viewed": None
                 })
 
         # 计算目标页数需要的结果总数
@@ -368,7 +369,8 @@ class WebnovelInfoPlugin(Star):
             "results": books,
             "cached_pages": {1: books},
             "current_page": 1,
-            "max_pages": 1
+            "max_pages": 1,
+            "last_viewed": None
         })
         
         msg = "📖 【起点·三江推荐】\n\n"
@@ -680,7 +682,8 @@ class WebnovelInfoPlugin(Star):
                 "keyword": book_name, 
                 "current_page": 1, 
                 "source": source_name,
-                "results": first_page_data[:self.page_size]  # 只取前10条展示
+                "results": first_page_data[:self.page_size],  # 只取前10条展示
+                "last_viewed": None
             })
 
             # 如果是直接查看详情模式

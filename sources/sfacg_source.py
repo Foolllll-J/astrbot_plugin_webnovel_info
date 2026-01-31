@@ -59,6 +59,7 @@ class SfacgSource(BaseSource):
                                 "url": full_url,
                                 "origin": "sfacg",
                                 "cover": cover_url,
+                                "bid": book_id,
                                 "book_id": book_id
                             })
                     

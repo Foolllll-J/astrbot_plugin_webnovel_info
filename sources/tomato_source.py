@@ -82,6 +82,7 @@ class TomatoSource(BaseSource):
                     results.append({
                         "name": b.get("book_name"),
                         "author": b.get("author"),
+                        "bid": b.get("book_id"),
                         "book_id": b.get("book_id"),
                         "url": f"https://fanqienovel.com/page/{b.get('book_id')}",
                         "origin": "tomato"
@@ -90,7 +91,7 @@ class TomatoSource(BaseSource):
             if return_metadata:
                 has_more = target_tab.get("has_more", False)
                 # 如果有更多，设置一个较大的总页数以允许翻页，因为 API 不直接返回总数
-                max_pages = 99 if has_more else page
+                max_pages = 30 if has_more else page
                 return {
                     "books": results,
                     "total": len(results),

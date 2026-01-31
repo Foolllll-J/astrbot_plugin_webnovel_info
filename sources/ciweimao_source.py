@@ -33,10 +33,17 @@ class CiweimaoSource(BaseSource):
                         url = node.xpath(".//p[@class='tit']/a/@href | .//a[@class='name']/@href")
                         author = node.xpath(".//p[@class='author']/a/text() | .//a[contains(@href, 'reader')]/text()")
                         if name and url:
+                            book_url = url[0] if url[0].startswith("http") else self.base_url + url[0]
+                            bid = None
+                            bid_match = re.search(r'book/(\d+)', book_url)
+                            if bid_match:
+                                bid = bid_match.group(1)
+                            
                             results.append({
                                 "name": name[0].strip(),
                                 "author": author[0].strip() if author else "未知",
-                                "url": url[0] if url[0].startswith("http") else self.base_url + url[0],
+                                "url": book_url,
+                                "bid": bid,
                                 "origin": "ciweimao"
                             })
 
