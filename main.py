@@ -78,12 +78,13 @@ class WebnovelInfoPlugin(Star):
             }
         return self.user_search_state[user_id]
 
-    @filter.command("搜书", alias={'ss'})
-    async def multi_search_handler(self, event: AstrMessageEvent):
+    # @filter.command("搜书", alias={'ss'})
+    # async def multi_search_handler(self, event: AstrMessageEvent):
+    async def _multi_search_handler_disabled(self, event: AstrMessageEvent):
         """多平台聚合搜索"""
         parts = event.message_str.strip().split()
         if len(parts) < 2:
-            yield event.plain_result("用法: /ss <书名> 或 /ss <序号> 或 /ss 下一页")
+            yield event.plain_result("用法: /ss <书名> 或 /ss <序号> 或 /ss n")
             return
 
         # 解析用户ID和操作指令
@@ -106,11 +107,11 @@ class WebnovelInfoPlugin(Star):
             return
 
         # 2. 翻页操作 (e.g. /ss 下一页)
-        if action in ["下一页", "下页", "上一页", "上页"] and len(parts) == 2:
+        if action in ("下一页", "下页", "n", "next", "上一页", "上页", "p", "prev") and len(parts) == 2:
             if not state["keyword"]:
                 yield event.plain_result("❌ 请先搜索。")
                 return
-            req_page = state["current_page"] + (1 if action in ["下一页", "下页"] else -1)
+            req_page = state["current_page"] + (1 if action in ("下一页", "下页", "n", "next") else -1)
             if req_page < 1:
                 yield event.plain_result("⬅️ 已经是第一页。")
                 return
@@ -293,8 +294,8 @@ class WebnovelInfoPlugin(Star):
         
         # 5. 构建翻页提示
         page_tips = []
-        page_tips.append(f"/ss 上一页") if req_page > 1 else None
-        page_tips.append(f"/ss 下一页") if has_next_page else None
+        page_tips.append(f"`/ss p`") if req_page > 1 else None
+        page_tips.append(f"`/ss n`") if has_next_page else None
         
         logger.info(f"用户 {user_id} 搜索【{keyword}】第 {req_page} 页结果，当前池中共有 {len(state['full_pool'])} 条结果，可加载更多：{can_load_more}。")
         
@@ -322,8 +323,9 @@ class WebnovelInfoPlugin(Star):
         async for res in self._common_handler(event, "ciweimao", "cwm", "刺猬猫"):
             yield res
 
-    @filter.command("番茄", alias={'fq'})
-    async def tomato_handler(self, event: AstrMessageEvent):
+    # @filter.command("番茄", alias={'fq'})
+    # async def tomato_handler(self, event: AstrMessageEvent):
+    async def _tomato_handler_disabled(self, event: AstrMessageEvent):
         """番茄小说专属搜索"""
         if not self.config.get("tomato_api_base"):
             yield event.plain_result("❌ 未配置番茄 API 基础地址，请在配置中填写。")
@@ -478,12 +480,12 @@ class WebnovelInfoPlugin(Star):
         req_page = state.get("bookshelf_page", 1)
         if len(parts) >= 2:
             action = parts[1]
-            if action in ["下一页", "下页"]:
+            if action in ("下一页", "下页", "n", "next"):
                 if req_page >= total_pages:
                     yield event.plain_result("🤔 已经到最后一页了。")
                     return
                 req_page += 1
-            elif action in ["上一页", "上页"]:
+            elif action in ("上一页", "上页", "p", "prev"):
                 if req_page <= 1:
                     yield event.plain_result("🤔 已经是第一页了。")
                     return
@@ -518,9 +520,9 @@ class WebnovelInfoPlugin(Star):
         # 动态构建翻页提示
         page_tips = []
         if req_page > 1:
-            page_tips.append("上一页")
+            page_tips.append("p")
         if req_page < total_pages:
-            page_tips.append("下一页")
+            page_tips.append("n")
             
         if page_tips:
             msg += f"💡 `/书架 {'/'.join(page_tips)}` 翻页\n"
@@ -566,7 +568,7 @@ class WebnovelInfoPlugin(Star):
         """
         parts = event.message_str.strip().split()
         if len(parts) < 2:
-            yield event.plain_result(f"请输入书名。用法: /{cmd_alias} <书名>\n💡 翻页: /{cmd_alias} 下一页\n💡 详情: /{cmd_alias} <序号>")
+            yield event.plain_result(f"请输入书名。用法: /{cmd_alias} <书名>\n💡 翻页: /{cmd_alias} n\n💡 详情: /{cmd_alias} <序号>")
             return
         
         # 解析用户ID和操作指令
@@ -612,12 +614,12 @@ class WebnovelInfoPlugin(Star):
             return
 
         # 2. 翻页操作 (e.g. /qd 下一页)
-        if action in ["下一页", "上一页"] and len(parts) == 2:
+        if action in ("下一页", "n", "next", "上一页", "p", "prev") and len(parts) == 2:
             if not state["keyword"] or state["source"] != source_name:
                 yield event.plain_result(f"❌ 请先使用 /{cmd_alias} 搜索一本书。")
                 return
             
-            next_p = state["current_page"] + (1 if action == "下一页" else -1)
+            next_p = state["current_page"] + (1 if action in ("下一页", "n", "next") else -1)
             if next_p < 1 or next_p > state["max_pages"]:
                 yield event.plain_result("➡️ 已经没有更多了。")
                 return
@@ -646,7 +648,6 @@ class WebnovelInfoPlugin(Star):
         else:
             book_name = " ".join(parts[1:])
 
-        yield event.plain_result(f"🔍 正在{platform_name}搜索“{book_name}”...") 
         try:
             # 拉取第一页数据
             source = self.source_manager.get_source(source_name)
@@ -737,9 +738,9 @@ class WebnovelInfoPlugin(Star):
         msg += f"\n💡 `/{cmd_alias} <序号>` 查看详情\n"
         flip_tips = []
         if current_page > 1:
-            flip_tips.append(f"/{cmd_alias} 上一页")
+            flip_tips.append(f"`/{cmd_alias} p`")
         if current_page < max_pages:
-            flip_tips.append(f"/{cmd_alias} 下一页")
+            flip_tips.append(f"`/{cmd_alias} n`")
         
         if flip_tips:
             msg += f"💡 使用 {' | '.join(flip_tips)} 翻页"
