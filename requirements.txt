@@ -4,3 +4,4 @@ requests
 yarl
 cachetools
 pycryptodome
+pillow-heif

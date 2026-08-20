@@ -10,5 +10,11 @@
     "hint": "开启后，支持试读的平台的书籍详情将附上试读内容。",
     "type": "bool",
     "default": false
+  },
+  "tomato_api_base": {
+    "description": "番茄小说 API 基础地址",
+    "hint": "用于番茄小说搜索。支持多个地址，前一个不可用时会自动尝试下一个。不填则不启用番茄搜索功能。",
+    "type": "list",
+    "default": []
   }
 }

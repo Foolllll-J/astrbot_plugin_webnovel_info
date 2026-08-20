@@ -323,9 +323,8 @@ class WebnovelInfoPlugin(Star):
         async for res in self._common_handler(event, "ciweimao", "cwm", "刺猬猫"):
             yield res
 
-    # @filter.command("番茄", alias={'fq'})
-    # async def tomato_handler(self, event: AstrMessageEvent):
-    async def _tomato_handler_disabled(self, event: AstrMessageEvent):
+    @filter.command("番茄", alias={'fq'})
+    async def tomato_handler(self, event: AstrMessageEvent):
         """番茄小说专属搜索"""
         if not self.config.get("tomato_api_base"):
             yield event.plain_result("❌ 未配置番茄 API 基础地址，请在配置中填写。")
@@ -783,8 +782,8 @@ class WebnovelInfoPlugin(Star):
             try:
                 session = await self.get_session()
                 # 针对番茄小说的 URL 使用 encoded=True，防止 aiohttp 对已签名的 URL 进行二次编码
-                # 番茄封面通常包含签名信息，二次编码会导致 403
-                is_tomato = "p3-novel.byteimg.com" in cover_url or "p6-novel.byteimg.com" in cover_url or "p9-novel.byteimg.com" in cover_url
+                # 番茄封面通常包含签名信息，二次编码会导致 403；图片代理 URL 同样含编码后的签名参数
+                is_tomato = "p3-novel.byteimg.com" in cover_url or "p6-novel.byteimg.com" in cover_url or "p9-novel.byteimg.com" in cover_url or "fqnovelpic.com" in cover_url or "/api/img/proxy" in cover_url
                 
                 request_url = URL(cover_url, encoded=True) if is_tomato else cover_url
                 
@@ -792,8 +791,14 @@ class WebnovelInfoPlugin(Star):
                     if resp.status == 200:
                         image_bytes = await resp.read()
                         if image_bytes:
-                            base64_str = base64.b64encode(image_bytes).decode()
-                            chain.append(Comp.Image(file=f"base64://{base64_str}"))
+                            # HEIC 封面（番茄等源）IM 无法显示，转 JPEG
+                            if image_bytes[4:8] == b"ftyp":
+                                image_bytes = self._convert_heic_to_jpeg(image_bytes)
+                            if image_bytes:
+                                base64_str = base64.b64encode(image_bytes).decode()
+                                chain.append(Comp.Image(file=f"base64://{base64_str}"))
+                            else:
+                                logger.warning(f"封面转码失败: {cover_url}")
                         else:
                             logger.warning(f"封面图片数据为空: {cover_url}")
                     else:
@@ -902,6 +907,23 @@ class WebnovelInfoPlugin(Star):
         # 清理空行并格式化缩进
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         return "　　" + "\n　　".join(lines)
+
+    @staticmethod
+    def _convert_heic_to_jpeg(image_bytes):
+        """HEIC/HEIF 图片转 JPEG（IM 不支持 HEIC 显示）"""
+        try:
+            import io
+            from PIL import Image
+            import pillow_heif
+            pillow_heif.register_heif_opener()
+            img = Image.open(io.BytesIO(image_bytes))
+            img = img.convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, "JPEG", quality=90)
+            return buf.getvalue()
+        except Exception as e:
+            logger.error(f"HEIC 转 JPEG 失败: {type(e).__name__} - {e}")
+            return None
 
     async def terminate(self):
         """插件卸载回调"""
